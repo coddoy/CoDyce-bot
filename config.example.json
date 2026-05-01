@@ -1,0 +1,34 @@
+{
+  "google": {
+    "credentials_file": "credentials.json"
+  },
+
+  "discord": {
+    "username": "Skill Tracker",
+    "avatar_url": null
+  },
+
+  "sheet_template": {
+    "worksheet": "Sheet1",
+    "skills": {
+      "Strength":     "B2",
+      "Dexterity":    "B3",
+      "Constitution": "B4",
+      "Intelligence": "B5",
+      "Wisdom":       "B6",
+      "Charisma":     "B7"
+    }
+  },
+
+  "players": {
+    "Cody": {
+      "spreadsheet_id": "REPLACE_WITH_GOOGLE_SHEET_ID",
+      "discord_webhook": "https://discord.com/api/webhooks/REPLACE/ME"
+    },
+    "Alice": {
+      "spreadsheet_id": "REPLACE_WITH_GOOGLE_SHEET_ID",
+      "worksheet": "Sheet1",
+      "discord_webhook": "https://discord.com/api/webhooks/REPLACE/ME"
+    }
+  }
+}
