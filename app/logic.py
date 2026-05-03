@@ -47,11 +47,13 @@ class NotifierBackend(Protocol):
 class IncrementResult:
     player: str
     skill: str
+    cell: str
     delta: int
     old_value: int
     new_value: int
     sheet_updated: bool
     discord_sent: bool
+    message: str
     discord_error: str | None = None
 
 
@@ -101,6 +103,7 @@ class AppService:
             raise ValueError("Increment must be non-zero")
 
         player = self.config.player(player_name)
+        cell = self.config.sheet_template.cell_for(skill)
         old_value, new_value = self._sheets.increment_skill(player, skill, delta)
 
         message = format_increment_message(player.name, skill, delta)
@@ -116,11 +119,13 @@ class AppService:
         return IncrementResult(
             player=player.name,
             skill=skill,
+            cell=cell,
             delta=delta,
             old_value=old_value,
             new_value=new_value,
             sheet_updated=True,
             discord_sent=discord_sent,
+            message=message,
             discord_error=discord_error,
         )
 

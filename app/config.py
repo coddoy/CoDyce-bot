@@ -151,3 +151,55 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         players=players,
         source_path=cfg_path.resolve(),
     )
+
+
+# --------------------------------------------------------------------------
+# Demo / built-in config
+# --------------------------------------------------------------------------
+DEMO_SOURCE = Path("<built-in demo>")
+
+DEMO_SEED: dict[str, dict[str, int]] = {
+    "Aria":  {"Strength": 8,  "Dexterity": 14, "Intelligence": 12},
+    "Borin": {"Strength": 16, "Dexterity": 10, "Intelligence": 9},
+}
+
+
+def make_demo_config() -> AppConfig:
+    """Return a self-contained AppConfig (no files / network needed).
+
+    Two demo characters, three skills each. The spreadsheet IDs and
+    webhook URLs are placeholder strings — they are *never* called in
+    demo mode because the app is wired to ``FakeSheetsClient`` and
+    ``NullNotifier`` whenever this config is in use.
+    """
+    template = SheetTemplate(
+        worksheet="Sheet1",
+        skills={
+            "Strength":     "B2",
+            "Dexterity":    "B3",
+            "Intelligence": "B4",
+        },
+    )
+    players = {
+        "Aria": PlayerConfig(
+            name="Aria",
+            spreadsheet_id="<demo>",
+            discord_webhook="<demo>",
+        ),
+        "Borin": PlayerConfig(
+            name="Borin",
+            spreadsheet_id="<demo>",
+            discord_webhook="<demo>",
+        ),
+    }
+    return AppConfig(
+        google=GoogleConfig(),
+        discord=DiscordConfig(username="Skill Tracker (demo)"),
+        sheet_template=template,
+        players=players,
+        source_path=DEMO_SOURCE,
+    )
+
+
+def is_demo_config(config: AppConfig) -> bool:
+    return config.source_path == DEMO_SOURCE

@@ -69,16 +69,21 @@ cell addresses (e.g. `B2`).
 python main.py
 ```
 
+By default the app starts in **demo mode**: a built-in 2-character /
+3-skill config, an in-memory fake sheets backend, and a no-op Discord
+notifier. The activity log shows the message that *would* have been
+posted to Discord, but no Google Sheets reads/writes or HTTP calls
+happen. This lets you click around the UI before any credentials are
+configured.
+
 Useful flags:
 
 ```bash
-python main.py --fake               # in-memory backend, no network calls
-python main.py --config other.json  # alternate config path
+python main.py                      # demo mode (default)
+python main.py --config foo.json    # demo mode with a custom config file
+python main.py --live               # real Sheets + Discord (requires config.json)
 python main.py --log-level DEBUG    # verbose logging
 ```
-
-`--fake` is the easiest way to try out the UI before you've finished
-setting up Google credentials.
 
 ## Sheet schema
 
@@ -110,7 +115,9 @@ value. Add or remove rows in your sheet and update the config to match.
 
 ## Status
 
-This is the project skeleton — Phases 1–3 from the original design
-are wired up end to end and runnable in `--fake` mode. Polish items
-(e.g. richer skill display, batch-edit, embed messages) are left for
-follow-up work.
+The project skeleton is in place. The default `python main.py` runs
+the offline demo so the UI can be iterated on without any Google or
+Discord setup. Live integration (`--live`) is wired up and should work
+once the service account JSON and webhook URLs are in place, but is
+intentionally not the default while the project is still being built
+out.

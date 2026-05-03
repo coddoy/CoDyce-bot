@@ -33,23 +33,24 @@ log = logging.getLogger(__name__)
 # ttk vs ttkbootstrap shim
 # --------------------------------------------------------------------------
 def _build_root() -> tuple[tk.Tk, Any]:
-    """Return ``(root, ttk_module)`` using ttkbootstrap when available."""
+    """Return ``(root, widget_module)``.
+
+    When ``ttkbootstrap`` is installed we use its ``Window`` so the
+    Bootstrap theme is applied to every ttk widget under it. We still
+    return the standard :mod:`tkinter.ttk` module for widget creation
+    though — ttkbootstrap re-exports some classic ``tk`` widgets (e.g.
+    ``LabelFrame``) which don't accept ``padding=`` and friends.
+    Sticking with ``ttk`` keeps widget options uniform; the global
+    bootstrap theme still themes them because the style is shared.
+    """
     try:
         import ttkbootstrap as tb  # type: ignore[import-not-found]
-        from ttkbootstrap.constants import (  # type: ignore[import-not-found]  # noqa: F401
-            BOTH,
-            LEFT,
-            RIGHT,
-            X,
-            Y,
-        )
 
         root = tb.Window(themename="darkly")
-        return root, tb
     except ImportError:
         log.info("ttkbootstrap not installed; falling back to plain ttk")
         root = tk.Tk()
-        return root, ttk
+    return root, ttk
 
 
 # --------------------------------------------------------------------------
@@ -117,12 +118,14 @@ class _Worker:
 class ControlPanel:
     PADDING = 10
 
-    def __init__(self, service: AppService) -> None:
+    def __init__(self, service: AppService, *, demo_mode: bool = False) -> None:
         self.service = service
+        self.demo_mode = demo_mode
         self.root, self._tk = _build_root()
-        self.root.title("Skill Tracker — Discord + Sheets")
-        self.root.geometry("640x560")
-        self.root.minsize(520, 480)
+        title = "Skill Tracker — DEMO" if demo_mode else "Skill Tracker — Discord + Sheets"
+        self.root.title(title)
+        self.root.geometry("640x600")
+        self.root.minsize(520, 520)
 
         self._worker = _Worker(self.root)
         self._skill_value_vars: dict[str, tk.StringVar] = {}
@@ -138,10 +141,30 @@ class ControlPanel:
         outer = self._tk.Frame(self.root, padding=self.PADDING)
         outer.pack(fill="both", expand=True)
 
+        if self.demo_mode:
+            self._build_demo_banner(outer)
         self._build_player_bar(outer)
         self._build_skills_panel(outer)
         self._build_action_bar(outer)
         self._build_log_panel(outer)
+
+    def _build_demo_banner(self, parent: Any) -> None:
+        text = (
+            "DEMO MODE — no Google Sheets reads/writes, no Discord posts. "
+            "Re-run with --live (and a real config.json) to enable the real backends."
+        )
+        banner = self._tk.Label(
+            parent,
+            text=text,
+            anchor="w",
+            justify="left",
+            padding=(8, 6),
+        )
+        try:
+            banner.configure(bootstyle="warning-inverse")  # ttkbootstrap
+        except tk.TclError:
+            pass
+        banner.pack(fill="x", pady=(0, self.PADDING))
 
     def _build_player_bar(self, parent: Any) -> None:
         bar = self._tk.Frame(parent)
@@ -309,22 +332,32 @@ class ControlPanel:
         var = self._skill_value_vars.get(result.skill)
         if var is not None:
             var.set(str(result.new_value))
-        self._log(
-            f"Updated sheet: {result.player} {result.skill} "
-            f"{result.old_value} -> {result.new_value} ({result.delta:+d})."
-        )
-        if result.discord_sent:
-            self._log(f"Posted to Discord for {result.player}.")
+
+        if self.demo_mode:
+            self._log(
+                f"[demo] would update {result.player} {result.cell} "
+                f"({result.skill}): {result.old_value} -> {result.new_value} "
+                f"({result.delta:+d})."
+            )
+            self._log(f'[demo] would post to Discord: "{result.message}"')
         else:
             self._log(
-                f"Sheet updated, but Discord post failed: {result.discord_error}",
-                level="error",
+                f"Updated sheet: {result.player} {result.skill} "
+                f"({result.cell}) {result.old_value} -> {result.new_value} "
+                f"({result.delta:+d})."
             )
-            messagebox.showwarning(
-                "Discord delivery failed",
-                "The sheet was updated, but the Discord notification failed:\n\n"
-                f"{result.discord_error}",
-            )
+            if result.discord_sent:
+                self._log(f'Posted to Discord: "{result.message}"')
+            else:
+                self._log(
+                    f"Sheet updated, but Discord post failed: {result.discord_error}",
+                    level="error",
+                )
+                messagebox.showwarning(
+                    "Discord delivery failed",
+                    "The sheet was updated, but the Discord notification failed:\n\n"
+                    f"{result.discord_error}",
+                )
         self._set_busy(False)
 
     def _on_apply_error(
@@ -363,5 +396,5 @@ class ControlPanel:
         self.root.mainloop()
 
 
-def run_app(service: AppService) -> None:
-    ControlPanel(service).run()
+def run_app(service: AppService, *, demo_mode: bool = False) -> None:
+    ControlPanel(service, demo_mode=demo_mode).run()
