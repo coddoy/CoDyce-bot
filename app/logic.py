@@ -18,6 +18,14 @@ from .discord_notify import (
     DiscordNotifier,
     format_increment_message,
 )
+from .hat import (
+    HatCommandError,
+    HatRequest,
+    HatResult,
+    format_hat_message,
+    parse_hat_command,
+    roll_hat,
+)
 from .sheets import SheetsError
 
 log = logging.getLogger(__name__)
@@ -55,6 +63,16 @@ class IncrementResult:
     discord_sent: bool
     message: str
     discord_error: str | None = None
+
+
+@dataclass(frozen=True)
+class HatRollResult:
+    """Outcome of a ``/hat`` command, ready for the UI to render."""
+
+    player: str
+    request: HatRequest
+    result: HatResult
+    message: str
 
 
 class NullNotifier:
@@ -129,9 +147,29 @@ class AppService:
             discord_error=discord_error,
         )
 
+    def execute_hat(self, player_name: str, command_text: str) -> HatRollResult:
+        """Parse, roll, and format a ``/hat`` command for ``player_name``.
+
+        Raises :class:`HatCommandError` when the input cannot be parsed.
+        Currently this does not post to Discord — webhooks can't reply
+        to commands, so delivery is deferred to the future slash-command
+        bot.
+        """
+        request = parse_hat_command(command_text, self.config.hat.die)
+        result = roll_hat(request)
+        message = format_hat_message(player_name, result)
+        return HatRollResult(
+            player=player_name,
+            request=request,
+            result=result,
+            message=message,
+        )
+
 
 __all__ = [
     "AppService",
+    "HatCommandError",
+    "HatRollResult",
     "IncrementResult",
     "NotifierBackend",
     "NullNotifier",

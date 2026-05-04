@@ -24,7 +24,8 @@ from datetime import datetime
 from tkinter import messagebox, scrolledtext, ttk
 from typing import Any, Callable
 
-from .logic import AppService, IncrementResult, SheetsError
+from .hat import HatCommandError
+from .logic import AppService, HatRollResult, IncrementResult, SheetsError
 
 log = logging.getLogger(__name__)
 
@@ -124,8 +125,8 @@ class ControlPanel:
         self.root, self._tk = _build_root()
         title = "Skill Tracker — DEMO" if demo_mode else "Skill Tracker — Discord + Sheets"
         self.root.title(title)
-        self.root.geometry("640x600")
-        self.root.minsize(520, 520)
+        self.root.geometry("640x700")
+        self.root.minsize(540, 620)
 
         self._worker = _Worker(self.root)
         self._skill_value_vars: dict[str, tk.StringVar] = {}
@@ -146,6 +147,7 @@ class ControlPanel:
         self._build_player_bar(outer)
         self._build_skills_panel(outer)
         self._build_action_bar(outer)
+        self._build_hat_panel(outer)
         self._build_log_panel(outer)
 
     def _build_demo_banner(self, parent: Any) -> None:
@@ -244,6 +246,30 @@ class ControlPanel:
         self.apply_btn.grid(row=0, column=4, sticky="w")
 
         bar.columnconfigure(5, weight=1)
+
+    def _build_hat_panel(self, parent: Any) -> None:
+        die = self.service.config.hat.die
+        title = f"Hat roll  (d{die}, or `hit` for d100)"
+        bar = self._tk.LabelFrame(parent, text=title, padding=self.PADDING)
+        bar.pack(fill="x", pady=(0, self.PADDING))
+
+        self._tk.Label(bar, text="/hat").grid(row=0, column=0, sticky="w")
+
+        self.hat_var = tk.StringVar()
+        self.hat_entry = self._tk.Entry(bar, textvariable=self.hat_var, width=28)
+        self.hat_entry.grid(row=0, column=1, padx=(6, 12), sticky="ew")
+        self.hat_entry.bind("<Return>", lambda _e: self._on_hat_roll())
+
+        self.hat_btn = self._tk.Button(bar, text="Roll", command=self._on_hat_roll)
+        self.hat_btn.grid(row=0, column=2, sticky="w")
+
+        hint = self._tk.Label(
+            bar,
+            text="e.g.  `52`   `3 33`   `hit`   `3 hit`   `3hit`",
+        )
+        hint.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        bar.columnconfigure(1, weight=1)
 
     def _build_log_panel(self, parent: Any) -> None:
         frame = self._tk.LabelFrame(parent, text="Activity", padding=self.PADDING)
@@ -367,6 +393,40 @@ class ControlPanel:
         self._log(msg, level="error")
         messagebox.showerror("Update failed", str(exc))
         self._set_busy(False)
+
+    def _on_hat_roll(self) -> None:
+        # Rolling is purely local (RNG + string format) so we keep it on
+        # the Tk main thread; no worker needed.
+        player = self._selected_player()
+        if not player:
+            messagebox.showerror("Missing input", "Select a player.")
+            return
+
+        command = self.hat_var.get()
+        if not command.strip():
+            messagebox.showerror(
+                "Missing input",
+                "Enter a hat command, e.g. `52`, `3 33`, `hit`, or `3 hit`.",
+            )
+            return
+
+        try:
+            result: HatRollResult = self.service.execute_hat(player, command)
+        except HatCommandError as exc:
+            self._log(f"/hat parse error: {exc}", level="error")
+            messagebox.showerror("Invalid /hat command", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - surface unexpected errors
+            log.exception("Unexpected hat error")
+            self._log(f"/hat failed: {exc}", level="error")
+            messagebox.showerror("Roll failed", str(exc))
+            return
+
+        # Render the multi-line message verbatim into the activity log.
+        for line in result.message.splitlines():
+            self._log(line)
+        self.hat_entry.selection_range(0, "end")
+        self.hat_entry.focus_set()
 
     # ---- helpers -----------------------------------------------------
     def _set_busy(self, busy: bool) -> None:

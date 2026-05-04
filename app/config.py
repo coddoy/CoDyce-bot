@@ -33,6 +33,18 @@ class DiscordConfig:
 
 
 @dataclass(frozen=True)
+class HatConfig:
+    """Settings for the ``/hat`` dice-rolling command.
+
+    ``die`` is the size of the standard die rolled when the command
+    is invoked with numeric args (e.g. ``/hat 52`` rolls 1d{die}+52).
+    The ``hit`` keyword always rolls d100 regardless of this value.
+    """
+
+    die: int = 32
+
+
+@dataclass(frozen=True)
 class SheetTemplate:
     """Cell locations for skills, shared across every player's sheet."""
 
@@ -67,6 +79,7 @@ class PlayerConfig:
 class AppConfig:
     google: GoogleConfig
     discord: DiscordConfig
+    hat: HatConfig
     sheet_template: SheetTemplate
     players: dict[str, PlayerConfig]
     source_path: Path
@@ -117,6 +130,15 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         avatar_url=discord_raw.get("avatar_url"),
     )
 
+    hat_raw = raw.get("hat", {}) or {}
+    try:
+        die = int(hat_raw.get("die", HatConfig().die))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("config.hat.die must be an integer") from exc
+    if die < 2:
+        raise ConfigError("config.hat.die must be >= 2")
+    hat = HatConfig(die=die)
+
     template_raw = _require(raw, "sheet_template", "config")
     skills = _require(template_raw, "skills", "config.sheet_template")
     if not isinstance(skills, dict) or not skills:
@@ -147,6 +169,7 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     return AppConfig(
         google=google,
         discord=discord,
+        hat=hat,
         sheet_template=template,
         players=players,
         source_path=cfg_path.resolve(),
@@ -195,6 +218,7 @@ def make_demo_config() -> AppConfig:
     return AppConfig(
         google=GoogleConfig(),
         discord=DiscordConfig(username="Skill Tracker (demo)"),
+        hat=HatConfig(die=32),
         sheet_template=template,
         players=players,
         source_path=DEMO_SOURCE,

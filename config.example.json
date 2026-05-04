@@ -8,6 +8,10 @@
     "avatar_url": null
   },
 
+  "hat": {
+    "die": 32
+  },
+
   "sheet_template": {
     "worksheet": "Sheet1",
     "skills": {
