@@ -11,9 +11,12 @@ Setup checklist:
   3. Under "Installation" / "OAuth2 URL Generator", grant the bot the
      ``applications.commands`` scope, generate the install URL, and
      invite the bot to your server.
-  4. (Optional) Put your server's ID in ``config.discord.guild_id`` so
-     the slash command syncs instantly while you're iterating; leave it
-     ``null`` to register globally (can take up to ~1 hour to appear).
+  4. (Optional) Put your server's ID in ``config.discord.guild_ids``
+     (a JSON array, e.g. ``[12345, 67890]``) so the slash command
+     syncs instantly to each listed guild while you're iterating;
+     leave it empty/omitted to register globally (can take up to ~1
+     hour to appear). The legacy single ``guild_id`` field is still
+     accepted for backward compatibility.
   5. Run ``python main.py --bot``.
 
 This module is **not** a replacement for the existing webhook posting
@@ -109,23 +112,20 @@ def build_client(config: AppConfig):
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
 
-    guild_obj = (
-        discord.Object(id=config.discord.guild_id)
-        if config.discord.guild_id
-        else None
-    )
+    guild_objs = [discord.Object(id=gid) for gid in config.discord.guild_ids]
 
     @client.event
     async def on_ready() -> None:  # pragma: no cover - network side-effect
         try:
-            if guild_obj is not None:
-                tree.copy_global_to(guild=guild_obj)
-                synced = await tree.sync(guild=guild_obj)
-                log.info(
-                    "Synced %d command(s) to guild %s",
-                    len(synced),
-                    config.discord.guild_id,
-                )
+            if guild_objs:
+                for guild_obj in guild_objs:
+                    tree.copy_global_to(guild=guild_obj)
+                    synced = await tree.sync(guild=guild_obj)
+                    log.info(
+                        "Synced %d command(s) to guild %s",
+                        len(synced),
+                        guild_obj.id,
+                    )
             else:
                 synced = await tree.sync()
                 log.info("Synced %d global command(s)", len(synced))
@@ -199,9 +199,14 @@ def run_bot(config: AppConfig) -> None:
         )
 
     client = build_client(config)
+    guild_label = (
+        ",".join(str(g) for g in config.discord.guild_ids)
+        if config.discord.guild_ids
+        else "global"
+    )
     log.info(
-        "Starting bot (guild_id=%s, die=d%d)…",
-        config.discord.guild_id or "global",
+        "Starting bot (guild_ids=%s, die=d%d)…",
+        guild_label,
         config.hat.die,
     )
     # ``client.run`` configures its own asyncio loop and signal handlers,

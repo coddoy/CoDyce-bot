@@ -8,7 +8,7 @@
     "avatar_url": null,
 
     "bot_token": "PASTE_BOT_TOKEN_HERE_FOR_SLASH_COMMANDS",
-    "guild_id": null
+    "guild_ids": []
   },
 
   "hat": {

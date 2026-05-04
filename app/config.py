@@ -28,10 +28,21 @@ class GoogleConfig:
 
 @dataclass(frozen=True)
 class DiscordConfig:
+    """Settings for the Discord bot.
+
+    ``guild_ids`` is the list of Discord server (guild) IDs the
+    ``/hat`` slash command is synced to on startup. Syncing per-guild
+    is near-instant; an empty list registers the command globally,
+    which can take up to ~1 hour to appear.
+
+    For backward compatibility ``config.discord.guild_id`` (a single
+    integer) is still accepted and merged into ``guild_ids``.
+    """
+
     username: str | None = None
     avatar_url: str | None = None
     bot_token: str | None = None
-    guild_id: int | None = None
+    guild_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,6 +125,43 @@ def _require(d: dict[str, Any], key: str, ctx: str) -> Any:
     return d[key]
 
 
+def _coerce_guild_id(value: Any, ctx: str) -> int:
+    if value is None or value == "":
+        raise ConfigError(f"{ctx} must be a non-empty Discord guild ID")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{ctx} must be an integer") from exc
+
+
+def _parse_guild_ids(discord_raw: dict[str, Any]) -> tuple[int, ...]:
+    """Read ``guild_ids`` (list) plus the legacy ``guild_id`` (single).
+
+    Both are optional; either or both may be present. Duplicates are
+    removed while preserving the order they first appear in the file.
+    """
+    ordered: list[int] = []
+    seen: set[int] = set()
+
+    def _add(value: int) -> None:
+        if value not in seen:
+            ordered.append(value)
+            seen.add(value)
+
+    legacy = discord_raw.get("guild_id")
+    if legacy not in (None, ""):
+        _add(_coerce_guild_id(legacy, "config.discord.guild_id"))
+
+    raw_list = discord_raw.get("guild_ids")
+    if raw_list is None:
+        return tuple(ordered)
+    if not isinstance(raw_list, list):
+        raise ConfigError("config.discord.guild_ids must be a list of integers")
+    for index, item in enumerate(raw_list):
+        _add(_coerce_guild_id(item, f"config.discord.guild_ids[{index}]"))
+    return tuple(ordered)
+
+
 def _coerce_bool(value: Any, ctx: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -150,16 +198,12 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     )
 
     discord_raw = raw.get("discord", {})
-    guild_id_raw = discord_raw.get("guild_id")
-    try:
-        guild_id = int(guild_id_raw) if guild_id_raw not in (None, "") else None
-    except (TypeError, ValueError) as exc:
-        raise ConfigError("config.discord.guild_id must be an integer") from exc
+    guild_ids = _parse_guild_ids(discord_raw)
     discord = DiscordConfig(
         username=discord_raw.get("username"),
         avatar_url=discord_raw.get("avatar_url"),
         bot_token=discord_raw.get("bot_token") or None,
-        guild_id=guild_id,
+        guild_ids=guild_ids,
     )
 
     hat_raw = raw.get("hat", {}) or {}
@@ -261,7 +305,7 @@ def make_demo_config() -> AppConfig:
     }
     return AppConfig(
         google=GoogleConfig(),
-        discord=DiscordConfig(username="Skill Tracker (demo)"),
+        discord=DiscordConfig(username="Skill Tracker (demo)", guild_ids=()),
         hat=HatConfig(die=32, enable_hat_rolls=True, enable_generic_rolls=True),
         sheet_template=template,
         players=players,
