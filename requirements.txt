@@ -2,3 +2,4 @@ gspread>=6.2.0,<7
 google-auth>=2.30
 requests>=2.32
 ttkbootstrap>=1.10,<2
+discord.py>=2.4,<3

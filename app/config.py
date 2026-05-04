@@ -30,6 +30,8 @@ class GoogleConfig:
 class DiscordConfig:
     username: str | None = None
     avatar_url: str | None = None
+    bot_token: str | None = None
+    guild_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -125,9 +127,16 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     )
 
     discord_raw = raw.get("discord", {})
+    guild_id_raw = discord_raw.get("guild_id")
+    try:
+        guild_id = int(guild_id_raw) if guild_id_raw not in (None, "") else None
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("config.discord.guild_id must be an integer") from exc
     discord = DiscordConfig(
         username=discord_raw.get("username"),
         avatar_url=discord_raw.get("avatar_url"),
+        bot_token=discord_raw.get("bot_token") or None,
+        guild_id=guild_id,
     )
 
     hat_raw = raw.get("hat", {}) or {}

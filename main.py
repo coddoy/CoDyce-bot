@@ -8,11 +8,16 @@ to Discord, but no network calls are made.
 Flip ``--live`` once you've finished setting up Google credentials and
 Discord webhooks (see README) to enable the real backends.
 
+Pass ``--bot`` to run the Discord slash-command bot instead of the UI.
+This requires ``config.discord.bot_token`` to be set in your config.
+
 Flags:
   --config PATH    Path to a JSON config file (default: config.json).
                    Only used when the file exists or when --live is set.
   --live           Use the real Google Sheets + Discord backends.
                    Requires --config to point at a valid file.
+  --bot            Run the Discord slash-command bot (no UI). Requires
+                   --config to point at a file with a real bot_token.
   --log-level X    Standard Python logging level (default: INFO).
 """
 
@@ -24,6 +29,7 @@ import sys
 from pathlib import Path
 from tkinter import messagebox
 
+from app.bot import HatBotError, run_bot
 from app.config import (
     AppConfig,
     ConfigError,
@@ -50,13 +56,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Use the real Google Sheets + Discord backends "
         "(default is the offline demo mode)",
     )
+    parser.add_argument(
+        "--bot",
+        action="store_true",
+        help="Run the Discord slash-command bot instead of the UI. "
+        "Requires --config to point at a file with discord.bot_token set.",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
 
-def _resolve_config(config_path: str, live: bool) -> AppConfig:
+def _resolve_config(config_path: str, *, live: bool, bot: bool) -> AppConfig:
     """Pick the right AppConfig for the requested mode."""
     path = Path(config_path)
+
+    if bot:
+        if not path.exists():
+            raise ConfigError(
+                f"--bot requires a real config file. Not found: {path}"
+            )
+        return load_config(path)
 
     if live:
         if not path.exists():
@@ -81,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        config = _resolve_config(args.config, args.live)
+        config = _resolve_config(args.config, live=args.live, bot=args.bot)
     except ConfigError as exc:
         logging.error("Config error: %s", exc)
         try:
@@ -89,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001 - no display available
             pass
         return 2
+
+    if args.bot:
+        try:
+            run_bot(config)
+        except HatBotError as exc:
+            logging.error("Bot error: %s", exc)
+            return 2
+        return 0
 
     if args.live:
         sheets = SheetsClient(config)
