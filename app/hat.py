@@ -302,6 +302,23 @@ def _empty_help(enable_hat: bool, enable_generic: bool) -> str:
     return f"Empty command. Try {', '.join(examples)}."
 
 
+def _build_groups(group: RollGroup, count: int) -> tuple[RollGroup, ...]:
+    """Build a tuple of ``count`` identical groups, validating size first.
+
+    The ``HatRequest.__post_init__`` size check fires *after* its
+    ``groups`` argument is materialized, so we must reject oversized
+    counts here to avoid allocating a multi-billion-entry tuple from
+    user input like ``/hat 999999999999 d6``.
+    """
+    if count < 1:
+        raise HatCommandError("At least one roll group is required.")
+    if count > MAX_GROUPS:
+        raise HatCommandError(
+            f"Number of groups (Z) must be at most {MAX_GROUPS}."
+        )
+    return tuple(group for _ in range(count))
+
+
 def _build_generic_request(match: "re.Match[str]") -> HatRequest:
     z_raw = match.group("z")
     x_raw = match.group("x")
@@ -321,7 +338,7 @@ def _build_generic_request(match: "re.Match[str]") -> HatRequest:
 
     group = RollGroup(count=x, die=y, modifier=modifier)
     return HatRequest(
-        groups=tuple(group for _ in range(z)),
+        groups=_build_groups(group, z),
         is_hit=False,
         reason=reason,
     )
@@ -384,7 +401,7 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
         reason = " ".join(tokens[2:]).strip()
         group = RollGroup(count=1, die=hat_die, modifier=second_int)
         return HatRequest(
-            groups=tuple(group for _ in range(first_int)),
+            groups=_build_groups(group, first_int),
             is_hit=False,
             reason=reason,
         )
@@ -399,7 +416,7 @@ def _build_hit_request(count: int, rest_tokens: list[str]) -> HatRequest:
     reason = " ".join(rest_tokens).strip()
     group = RollGroup(count=1, die=HIT_DIE, modifier=0)
     return HatRequest(
-        groups=tuple(group for _ in range(count)),
+        groups=_build_groups(group, count),
         is_hit=True,
         reason=reason,
     )
