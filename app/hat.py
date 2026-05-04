@@ -2,31 +2,46 @@
 
 Parses the textual command, rolls the dice, and formats a Discord-ready
 reply. The functions here are deliberately UI-agnostic so the same code
-powers both the Tk demo entry box *and* a future Discord slash-command
+powers both the Tk demo entry box *and* the Discord slash-command
 handler.
 
-Supported syntax (case-insensitive, leading ``/hat`` optional)::
+Two independent parsers feed the same command, gated by config flags
+(:class:`app.config.HatConfig`):
 
-    <modifier>            # 1 d{config.die} + modifier
-    <count> <modifier>    # count d{config.die} + modifier
-    hit                   # 1 d100
-    <count> hit           # count d100
-    <count>hit            # count d100  (sticky form)
+* **Hat shorthand** (``enable_hat_rolls``) — the game-system specific
+  form that rolls ``1d{config.die}+modifier`` and uses the ``hit``
+  keyword for d100::
 
-Any trailing text after the matched prefix is captured verbatim as the
-roll's *reason* and echoed back in the formatted reply, e.g.::
+      <modifier>            # 1 d{die} + modifier
+      <count> <modifier>    # count groups of 1 d{die} + modifier
+      hit                   # 1 d100   (X defaults to 1)
+      <count> hit           # count d100   (X must be < 10)
+      <count>hit            # count d100   (X must be < 10, sticky)
+      hit <count>           # count d100   (X must be < 10)
+      hit<count>            # count d100   (X must be < 10, sticky)
 
-    /hat 52 attack with sword     -> 1d32+52, reason "attack with sword"
-    /hat 3 33 burst fire          -> 3 d32+33, reason "burst fire"
-    /hat 3 hit aoe                -> 3 d100,   reason "aoe"
+* **Generic** (``enable_generic_rolls``) — the universal
+  ``Z XdY[+/-#]`` form::
 
-Examples (with ``config.hat.die == 32``)::
+      dY                    # 1 group of 1 dY
+      XdY                   # 1 group of X dY
+      Z XdY                 # Z groups of X dY
+      Z XdY +N | -N         # …with a per-group modifier
+      …[reason text]        # free-form reason captured verbatim
 
-    /hat 52        -> 1d32+52
-    /hat 3 33      -> 3 d32+33  (three sets of 1d32+33 each)
-    /hat hit       -> 1d100
-    /hat 3 hit     -> 3 d100
-    /hat 3hit      -> 3 d100
+  Z defaults to 1, X defaults to 1. Limits: ``Z <= 20``,
+  ``X <= 1000``, ``Y <= 1000``, ``|modifier| <= 1000``. Modifier
+  options may be tight (``3d6+2``) or spaced (``3d6 + 2``).
+
+Output form depends on group count:
+
+* **One group** (Z == 1) → single-line message with the dice listed
+  inline, identical in shape to the original ``/hat`` reply.
+* **Multiple groups** (Z > 1) → first-line summary plus one
+  ``Set N: …`` line per group.
+
+Any text after the matched dice expression is captured as the roll's
+*reason* and echoed back in the formatted reply.
 """
 
 from __future__ import annotations
@@ -37,8 +52,12 @@ from dataclasses import dataclass, field
 
 HIT_KEYWORD = "hit"
 HIT_DIE = 100
+HIT_MAX_COUNT = 9  # "Xhit" / "X hit" / "hitX" / "hit X" require X < 10
 
-MAX_COUNT = 100  # keep replies under Discord's 2000-char ceiling
+MAX_GROUPS = 20      # Z
+MAX_DIE_COUNT = 1000  # X
+MAX_DIE_SIZE = 1000   # Y
+MAX_MODIFIER = 1000   # |+/-#|
 
 
 class HatCommandError(ValueError):
@@ -46,66 +65,125 @@ class HatCommandError(ValueError):
 
 
 @dataclass(frozen=True)
+class RollGroup:
+    """One ``XdY+/-#`` group within a roll request."""
+
+    count: int      # X — number of dice rolled in this group
+    die: int        # Y — sides per die
+    modifier: int   # added to the group's sum
+
+    def __post_init__(self) -> None:
+        if self.count < 1:
+            raise HatCommandError("Roll count (X) must be at least 1.")
+        if self.count > MAX_DIE_COUNT:
+            raise HatCommandError(
+                f"Roll count (X) must be at most {MAX_DIE_COUNT}."
+            )
+        if self.die < 2:
+            raise HatCommandError("Die size (Y) must be at least 2.")
+        if self.die > MAX_DIE_SIZE:
+            raise HatCommandError(
+                f"Die size (Y) must be at most {MAX_DIE_SIZE}."
+            )
+        if abs(self.modifier) > MAX_MODIFIER:
+            raise HatCommandError(
+                f"Modifier must be between -{MAX_MODIFIER} and +{MAX_MODIFIER}."
+            )
+
+
+@dataclass(frozen=True)
 class HatRequest:
-    count: int
-    die: int
-    modifier: int
+    """A parsed roll request — Z groups of identical XdY+/-# dice.
+
+    All groups in a single request share their X/Y/modifier; only the
+    count of groups (Z) varies between hat shorthand and generic
+    forms.
+    """
+
+    groups: tuple[RollGroup, ...]
     is_hit: bool = False
     reason: str = ""
 
     def __post_init__(self) -> None:
-        if self.count < 1:
-            raise HatCommandError("Roll count must be at least 1.")
-        if self.count > MAX_COUNT:
+        if not self.groups:
+            raise HatCommandError("At least one roll group is required.")
+        if len(self.groups) > MAX_GROUPS:
             raise HatCommandError(
-                f"Roll count must be at most {MAX_COUNT}."
+                f"Number of groups (Z) must be at most {MAX_GROUPS}."
             )
-        if self.die < 2:
-            raise HatCommandError("Die size must be at least 2.")
+
+    @property
+    def num_groups(self) -> int:
+        return len(self.groups)
 
 
 @dataclass(frozen=True)
 class HatResult:
-    request: HatRequest
-    rolls: tuple[int, ...] = field(default_factory=tuple)
+    """The dice rolled for a :class:`HatRequest`.
 
-    @property
-    def totals(self) -> tuple[int, ...]:
-        return tuple(roll + self.request.modifier for roll in self.rolls)
+    ``group_rolls[i]`` is the tuple of dice rolled for group ``i``.
+    """
+
+    request: HatRequest
+    group_rolls: tuple[tuple[int, ...], ...] = field(default_factory=tuple)
+
+    def total_for(self, group_index: int) -> int:
+        rolls = self.group_rolls[group_index]
+        modifier = self.request.groups[group_index].modifier
+        return sum(rolls) + modifier
 
 
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
-_STICKY_HIT_RE = re.compile(r"^(\d+)hit$", re.IGNORECASE)
+# Generic form: optional Z, required XdY (X may be empty), optional
+# +/- modifier (with optional whitespace around the sign), optional
+# trailing reason. ``re.DOTALL`` lets reasons that contain newlines
+# survive intact, although we already strip incoming text.
+_GENERIC_RE = re.compile(
+    r"""
+    ^
+    (?:(?P<z>\d+)\s+)?              # optional Z, requires trailing space
+    (?P<x>\d*)d(?P<y>\d+)           # XdY (X defaults to 1 when empty)
+    (?:\s*(?P<sign>[+-])\s*(?P<mag>\d+))?  # optional +/- modifier
+    (?:\s+(?P<reason>.*))?          # optional reason, must be space-separated
+    $
+    """,
+    re.VERBOSE | re.IGNORECASE | re.DOTALL,
+)
+
+_STICKY_HIT_BEFORE_RE = re.compile(r"^(\d+)hit$", re.IGNORECASE)
+_STICKY_HIT_AFTER_RE = re.compile(r"^hit(\d+)$", re.IGNORECASE)
 
 
-def _try_int(token: str) -> int | None:
+def _try_int(token: str | None) -> int | None:
+    if token is None:
+        return None
     try:
         return int(token)
     except ValueError:
         return None
 
 
-def parse_hat_command(text: str, default_die: int) -> HatRequest:
+def parse_hat_command(
+    text: str,
+    hat_die: int,
+    *,
+    enable_hat: bool = True,
+    enable_generic: bool = False,
+) -> HatRequest:
     """Parse a raw ``/hat`` command string into a :class:`HatRequest`.
 
-    Accepts an optional leading ``/hat`` (or ``hat``) prefix so users
-    can paste either form into the demo entry box.
-
-    The matched prefix is consumed greedily (numbers and/or the ``hit``
-    keyword); any tokens left over are joined into
-    :attr:`HatRequest.reason` so callers can render a free-form note
-    alongside the roll.
+    The two parser families are tried in this order: generic first
+    (the ``d`` token disambiguates it from hat shorthand), then hat
+    shorthand. If both are disabled, every input is rejected.
     """
     if text is None:
         raise HatCommandError("No command provided.")
 
     cleaned = text.strip()
     if not cleaned:
-        raise HatCommandError(
-            "Empty command. Try `/hat 52`, `/hat 3 33`, or `/hat hit`."
-        )
+        raise HatCommandError(_empty_help(enable_hat, enable_generic))
 
     lowered = cleaned.lower()
     if lowered.startswith("/hat"):
@@ -114,68 +192,139 @@ def parse_hat_command(text: str, default_die: int) -> HatRequest:
         cleaned = cleaned[len("hat"):].strip()
 
     if not cleaned:
+        raise HatCommandError(_empty_help(enable_hat, enable_generic))
+
+    if not enable_hat and not enable_generic:
         raise HatCommandError(
-            "Missing arguments. Try `52`, `3 33`, `hit`, or `3 hit`."
+            "Both hat rolls and generic rolls are disabled in config."
         )
 
+    if enable_generic:
+        match = _GENERIC_RE.match(cleaned)
+        if match:
+            return _build_generic_request(match)
+
+    if enable_hat:
+        return _parse_hat_form(cleaned, hat_die)
+
+    raise HatCommandError(
+        "Could not parse roll. Generic format requires `XdY[+/-#]` "
+        "(e.g., `3d6+2`); hat shorthand is disabled in config."
+    )
+
+
+def _empty_help(enable_hat: bool, enable_generic: bool) -> str:
+    examples: list[str] = []
+    if enable_hat:
+        examples.extend(["`52`", "`3 33`", "`hit`"])
+    if enable_generic:
+        examples.extend(["`d20`", "`3d6+2`", "`2 4d8`"])
+    if not examples:
+        return "Both hat and generic rolls are disabled in config."
+    return f"Empty command. Try {', '.join(examples)}."
+
+
+def _build_generic_request(match: "re.Match[str]") -> HatRequest:
+    z_raw = match.group("z")
+    x_raw = match.group("x")
+    y_raw = match.group("y")
+    sign = match.group("sign")
+    mag_raw = match.group("mag")
+    reason_raw = match.group("reason")
+
+    z = int(z_raw) if z_raw else 1
+    x = int(x_raw) if x_raw else 1
+    y = int(y_raw)
+    modifier = 0
+    if sign and mag_raw:
+        magnitude = int(mag_raw)
+        modifier = magnitude if sign == "+" else -magnitude
+    reason = (reason_raw or "").strip()
+
+    group = RollGroup(count=x, die=y, modifier=modifier)
+    return HatRequest(
+        groups=tuple(group for _ in range(z)),
+        is_hit=False,
+        reason=reason,
+    )
+
+
+def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     tokens = cleaned.split()
+    if not tokens:
+        raise HatCommandError("Missing arguments.")
+
     first = tokens[0]
 
-    # Greedy prefix match — pick the longest pattern the leading tokens
-    # satisfy, then everything else falls through to the reason.
-    sticky = _STICKY_HIT_RE.match(first)
-    if sticky:
-        consumed = 1
-        request_kwargs: dict = {
-            "count": int(sticky.group(1)),
-            "die": HIT_DIE,
-            "modifier": 0,
-            "is_hit": True,
-        }
-    elif first.lower() == HIT_KEYWORD:
-        consumed = 1
-        request_kwargs = {
-            "count": 1,
-            "die": HIT_DIE,
-            "modifier": 0,
-            "is_hit": True,
-        }
-    else:
-        first_int = _try_int(first)
-        if first_int is None:
-            raise HatCommandError(
-                f"Could not understand `{first}`. "
-                "Start with an integer (and optionally `hit`)."
-            )
+    # "Xhit" sticky form (X must be 1..9)
+    sticky_before = _STICKY_HIT_BEFORE_RE.match(first)
+    if sticky_before:
+        count = int(sticky_before.group(1))
+        if 1 <= count <= HIT_MAX_COUNT:
+            return _build_hit_request(count, tokens[1:])
+        # Out-of-range sticky hit: fall through to other parsers; if
+        # nothing else matches the user gets a useful error below.
 
-        second = tokens[1] if len(tokens) >= 2 else None
-        second_int = _try_int(second) if second is not None else None
+    # "hitX" sticky form (X must be 1..9)
+    sticky_after = _STICKY_HIT_AFTER_RE.match(first)
+    if sticky_after:
+        count = int(sticky_after.group(1))
+        if 1 <= count <= HIT_MAX_COUNT:
+            return _build_hit_request(count, tokens[1:])
 
-        if second is not None and second.lower() == HIT_KEYWORD:
-            consumed = 2
-            request_kwargs = {
-                "count": first_int,
-                "die": HIT_DIE,
-                "modifier": 0,
-                "is_hit": True,
-            }
-        elif second_int is not None:
-            consumed = 2
-            request_kwargs = {
-                "count": first_int,
-                "die": default_die,
-                "modifier": second_int,
-            }
-        else:
-            consumed = 1
-            request_kwargs = {
-                "count": 1,
-                "die": default_die,
-                "modifier": first_int,
-            }
+    # Bare "hit" possibly followed by a small count
+    if first.lower() == HIT_KEYWORD:
+        count = 1
+        rest = tokens[1:]
+        if rest:
+            n = _try_int(rest[0])
+            if n is not None and 1 <= n <= HIT_MAX_COUNT:
+                count = n
+                rest = rest[1:]
+        return _build_hit_request(count, rest)
 
-    reason = " ".join(tokens[consumed:]).strip()
-    return HatRequest(reason=reason, **request_kwargs)
+    first_int = _try_int(first)
+    if first_int is None:
+        raise HatCommandError(
+            f"Could not understand `{first}`. "
+            "Start with an integer (e.g., `52`, `3 33`, `hit`)."
+        )
+
+    second = tokens[1] if len(tokens) >= 2 else None
+
+    # "X hit" (X must be 1..9)
+    if (
+        second is not None
+        and second.lower() == HIT_KEYWORD
+        and 1 <= first_int <= HIT_MAX_COUNT
+    ):
+        return _build_hit_request(first_int, tokens[2:])
+
+    second_int = _try_int(second) if second is not None else None
+    if second_int is not None:
+        # "X N" → X groups of 1d{hat_die}+N
+        reason = " ".join(tokens[2:]).strip()
+        group = RollGroup(count=1, die=hat_die, modifier=second_int)
+        return HatRequest(
+            groups=tuple(group for _ in range(first_int)),
+            is_hit=False,
+            reason=reason,
+        )
+
+    # "N" — single hat roll with N as the modifier; trailing tokens are reason.
+    reason = " ".join(tokens[1:]).strip()
+    group = RollGroup(count=1, die=hat_die, modifier=first_int)
+    return HatRequest(groups=(group,), is_hit=False, reason=reason)
+
+
+def _build_hit_request(count: int, rest_tokens: list[str]) -> HatRequest:
+    reason = " ".join(rest_tokens).strip()
+    group = RollGroup(count=1, die=HIT_DIE, modifier=0)
+    return HatRequest(
+        groups=tuple(group for _ in range(count)),
+        is_hit=True,
+        reason=reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +333,11 @@ def parse_hat_command(text: str, default_die: int) -> HatRequest:
 def roll_hat(request: HatRequest, rng: random.Random | None = None) -> HatResult:
     """Roll the dice described by ``request``."""
     r = rng or random
-    rolls = tuple(r.randint(1, request.die) for _ in range(request.count))
-    return HatResult(request=request, rolls=rolls)
+    group_rolls = tuple(
+        tuple(r.randint(1, group.die) for _ in range(group.count))
+        for group in request.groups
+    )
+    return HatResult(request=request, group_rolls=group_rolls)
 
 
 # ---------------------------------------------------------------------------
@@ -195,32 +347,51 @@ def _format_modifier(modifier: int) -> str:
     if modifier > 0:
         return f"+{modifier}"
     if modifier < 0:
-        return str(modifier)  # already includes minus sign
+        return str(modifier)
     return ""
+
+
+def _format_group_expr(group: RollGroup, *, leading_one: bool) -> str:
+    """Render a group as ``XdY+/-#``.
+
+    ``leading_one=True`` prints ``1d{Y}`` for X==1 (matches the
+    original single-roll hat output). ``leading_one=False`` drops the
+    leading 1 so it reads ``d{Y}`` (matches the original multi-roll
+    hat header).
+    """
+    mod = _format_modifier(group.modifier)
+    if group.count > 1:
+        return f"{group.count}d{group.die}{mod}"
+    if leading_one:
+        return f"1d{group.die}{mod}"
+    return f"d{group.die}{mod}"
 
 
 def format_hat_message(player: str, result: HatResult) -> str:
     """Render the player-visible reply for a completed roll."""
     req = result.request
-    mod_str = _format_modifier(req.modifier)
     reason_str = f" Reason: {req.reason}" if req.reason else ""
 
-    if req.count == 1:
-        formula = f"1d{req.die}{mod_str}"
-        roll = result.rolls[0]
-        total = roll + req.modifier
+    if req.num_groups == 1:
+        group = req.groups[0]
+        formula = _format_group_expr(group, leading_one=True)
+        rolls = result.group_rolls[0]
+        rolls_str = ", ".join(str(r) for r in rolls)
+        total = result.total_for(0)
         return (
             f"\U0001F3B2 {player} Request: {formula}{reason_str} "
-            f"Roll: [{roll}] = {total}"
+            f"Roll: [{rolls_str}] = {total}"
         )
 
-    # Multi-roll form: matches the spec'd "<count> d<die><mod>" with a
-    # single space between the count and the die expression.
-    formula = f"{req.count} d{req.die}{mod_str}"
+    # Multi-group form. All groups share their X/Y/modifier, so the
+    # header reads "{Z} <inner>".
+    inner = _format_group_expr(req.groups[0], leading_one=False)
+    formula = f"{req.num_groups} {inner}"
     lines = [f"\U0001F3B2 {player} Request: {formula}{reason_str}"]
-    for index, roll in enumerate(result.rolls, start=1):
-        total = roll + req.modifier
-        lines.append(f"Set {index}: Roll: [{roll}] = {total}")
+    for index, rolls in enumerate(result.group_rolls, start=1):
+        rolls_str = ", ".join(str(r) for r in rolls)
+        total = result.total_for(index - 1)
+        lines.append(f"Set {index}: Roll: [{rolls_str}] = {total}")
     return "\n".join(lines)
 
 
@@ -228,6 +399,7 @@ __all__ = [
     "HatCommandError",
     "HatRequest",
     "HatResult",
+    "RollGroup",
     "format_hat_message",
     "parse_hat_command",
     "roll_hat",

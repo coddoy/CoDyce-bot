@@ -12,7 +12,9 @@
   },
 
   "hat": {
-    "die": 32
+    "die": 32,
+    "enable_hat_rolls": true,
+    "enable_generic_rolls": true
   },
 
   "sheet_template": {

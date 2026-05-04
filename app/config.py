@@ -41,9 +41,20 @@ class HatConfig:
     ``die`` is the size of the standard die rolled when the command
     is invoked with numeric args (e.g. ``/hat 52`` rolls 1d{die}+52).
     The ``hit`` keyword always rolls d100 regardless of this value.
+
+    Two parsers can be enabled independently:
+
+    * ``enable_hat_rolls`` — the game-system-specific shorthand
+      (``52``, ``3 33``, ``hit``, ``3 hit``, ``5hit``, …) that rolls
+      ``1d{die}+modifier`` and uses the ``hit`` keyword for d100.
+    * ``enable_generic_rolls`` — the universal ``Z XdY+/-#`` form
+      (``3d6``, ``2 4d8+1``, ``d20 -3``, …) where Z is the number of
+      groups, X dice per group, Y die size, with an optional modifier.
     """
 
     die: int = 32
+    enable_hat_rolls: bool = True
+    enable_generic_rolls: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +114,18 @@ def _require(d: dict[str, Any], key: str, ctx: str) -> Any:
     return d[key]
 
 
+def _coerce_bool(value: Any, ctx: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    raise ConfigError(f"{ctx} must be a boolean")
+
+
 def load_config(path: str | Path = "config.json") -> AppConfig:
     """Load and validate ``config.json``.
 
@@ -146,7 +169,19 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         raise ConfigError("config.hat.die must be an integer") from exc
     if die < 2:
         raise ConfigError("config.hat.die must be >= 2")
-    hat = HatConfig(die=die)
+    enable_hat_rolls = _coerce_bool(
+        hat_raw.get("enable_hat_rolls", HatConfig().enable_hat_rolls),
+        "config.hat.enable_hat_rolls",
+    )
+    enable_generic_rolls = _coerce_bool(
+        hat_raw.get("enable_generic_rolls", HatConfig().enable_generic_rolls),
+        "config.hat.enable_generic_rolls",
+    )
+    hat = HatConfig(
+        die=die,
+        enable_hat_rolls=enable_hat_rolls,
+        enable_generic_rolls=enable_generic_rolls,
+    )
 
     template_raw = _require(raw, "sheet_template", "config")
     skills = _require(template_raw, "skills", "config.sheet_template")
@@ -227,7 +262,7 @@ def make_demo_config() -> AppConfig:
     return AppConfig(
         google=GoogleConfig(),
         discord=DiscordConfig(username="Skill Tracker (demo)"),
-        hat=HatConfig(die=32),
+        hat=HatConfig(die=32, enable_hat_rolls=True, enable_generic_rolls=True),
         sheet_template=template,
         players=players,
         source_path=DEMO_SOURCE,

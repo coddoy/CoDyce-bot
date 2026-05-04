@@ -36,9 +36,52 @@ from .hat import (
 
 log = logging.getLogger(__name__)
 
+# Discord caps slash-command descriptions at 100 characters; keep the
+# rendered string comfortably under that.
+_DISCORD_DESCRIPTION_LIMIT = 100
+
 
 class HatBotError(RuntimeError):
     """Raised when the bot is misconfigured or cannot start."""
+
+
+def _hat_command_help(config: AppConfig) -> tuple[str, str]:
+    """Build the slash command's short description and arg help text.
+
+    Both strings adapt to which parsers are enabled in the config so
+    users only see examples that will actually work. Discord caps
+    both fields at 100 characters; we trim conservatively.
+    """
+    short_examples: list[str] = []
+    long_examples: list[str] = []
+    if config.hat.enable_hat_rolls:
+        short_examples.extend(["52", "3 33", "hit"])
+        long_examples.extend(["52", "3 33", "hit", "3 hit", "3hit"])
+    if config.hat.enable_generic_rolls:
+        short_examples.extend(["3d6+2", "2 4d8"])
+        long_examples.extend(["d20", "3d6+2", "2 4d8", "3 d10+1"])
+
+    if short_examples:
+        description = (
+            f"Roll dice (hat d{config.hat.die}). Ex: "
+            f"{' | '.join(short_examples)}"
+        )
+    else:
+        description = "Roll dice (no parsers enabled in config)."
+    description = _truncate(description, _DISCORD_DESCRIPTION_LIMIT)
+
+    if long_examples:
+        args_help = "Examples: " + ", ".join(f"`{e}`" for e in long_examples)
+        args_help = _truncate(args_help, _DISCORD_DESCRIPTION_LIMIT)
+    else:
+        args_help = "Args after /hat (no rolls enabled)."
+    return description, args_help
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "\u2026"
 
 
 def build_client(config: AppConfig):
@@ -84,24 +127,20 @@ def build_client(config: AppConfig):
             log.exception("Failed to sync slash commands")
         log.info("Logged in as %s (id=%s)", client.user, getattr(client.user, "id", "?"))
 
-    @tree.command(
-        name="hat",
-        description=(
-            f"Roll the hat dice (default d{config.hat.die}). "
-            "Examples: 52 | 3 33 | hit | 3 hit | 52 attack with sword"
-        ),
-    )
-    @app_commands.describe(
-        args=(
-            "Args after /hat. Examples: `52`, `3 33`, `hit`, `3 hit`, `3hit`. "
-            "Any text after the matched portion is shown as the roll's reason."
-        )
-    )
+    description, args_help = _hat_command_help(config)
+
+    @tree.command(name="hat", description=description)
+    @app_commands.describe(args=args_help)
     async def hat_cmd(
         interaction: "discord.Interaction", args: str
     ) -> None:  # pragma: no cover - network side-effect
         try:
-            request = parse_hat_command(args, config.hat.die)
+            request = parse_hat_command(
+                args,
+                config.hat.die,
+                enable_hat=config.hat.enable_hat_rolls,
+                enable_generic=config.hat.enable_generic_rolls,
+            )
         except HatCommandError as exc:
             await interaction.response.send_message(
                 f"\u274C `{args}` — {exc}", ephemeral=True

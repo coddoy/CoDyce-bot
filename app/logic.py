@@ -155,7 +155,13 @@ class AppService:
         to commands, so delivery is deferred to the future slash-command
         bot.
         """
-        request = parse_hat_command(command_text, self.config.hat.die)
+        hat_cfg = self.config.hat
+        request = parse_hat_command(
+            command_text,
+            hat_cfg.die,
+            enable_hat=hat_cfg.enable_hat_rolls,
+            enable_generic=hat_cfg.enable_generic_rolls,
+        )
         result = roll_hat(request)
         message = format_hat_message(player_name, result)
         return HatRollResult(

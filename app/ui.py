@@ -248,8 +248,15 @@ class ControlPanel:
         bar.columnconfigure(5, weight=1)
 
     def _build_hat_panel(self, parent: Any) -> None:
-        die = self.service.config.hat.die
-        title = f"Hat roll  (d{die}, or `hit` for d100)"
+        hat_cfg = self.service.config.hat
+        title_parts: list[str] = []
+        if hat_cfg.enable_hat_rolls:
+            title_parts.append(f"d{hat_cfg.die}, or `hit` for d100")
+        if hat_cfg.enable_generic_rolls:
+            title_parts.append("generic `Z XdY +N`")
+        descriptor = ", ".join(title_parts) if title_parts else "no parsers enabled"
+        title = f"Hat roll  ({descriptor})"
+
         bar = self._tk.LabelFrame(parent, text=title, padding=self.PADDING)
         bar.pack(fill="x", pady=(0, self.PADDING))
 
@@ -263,12 +270,16 @@ class ControlPanel:
         self.hat_btn = self._tk.Button(bar, text="Roll", command=self._on_hat_roll)
         self.hat_btn.grid(row=0, column=2, sticky="w")
 
+        examples: list[str] = []
+        if hat_cfg.enable_hat_rolls:
+            examples.extend(["`52`", "`3 33`", "`hit`", "`3 hit`", "`3hit`"])
+        if hat_cfg.enable_generic_rolls:
+            examples.extend(["`d20`", "`3d6+2`", "`2 4d8`"])
+        examples_text = "   ".join(examples) if examples else "(rolls disabled)"
+
         hint = self._tk.Label(
             bar,
-            text=(
-                "e.g.  `52`   `3 33`   `hit`   `3 hit`   `3hit`"
-                "      (trailing text becomes the roll's Reason)"
-            ),
+            text=f"e.g.  {examples_text}      (trailing text → Reason)",
         )
         hint.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
