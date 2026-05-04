@@ -29,7 +29,9 @@ import logging
 from .config import AppConfig
 from .hat import (
     HatCommandError,
+    format_hat_help,
     format_hat_message,
+    is_help_command,
     parse_hat_command,
     roll_hat,
 )
@@ -71,10 +73,14 @@ def _hat_command_help(config: AppConfig) -> tuple[str, str]:
     description = _truncate(description, _DISCORD_DESCRIPTION_LIMIT)
 
     if long_examples:
-        args_help = "Examples: " + ", ".join(f"`{e}`" for e in long_examples)
+        args_help = (
+            "Examples: "
+            + ", ".join(f"`{e}`" for e in long_examples)
+            + ". Use `help` for full usage."
+        )
         args_help = _truncate(args_help, _DISCORD_DESCRIPTION_LIMIT)
     else:
-        args_help = "Args after /hat (no rolls enabled)."
+        args_help = "Args after /hat (no rolls enabled). Try `help`."
     return description, args_help
 
 
@@ -134,6 +140,15 @@ def build_client(config: AppConfig):
     async def hat_cmd(
         interaction: "discord.Interaction", args: str
     ) -> None:  # pragma: no cover - network side-effect
+        if is_help_command(args):
+            help_text = format_hat_help(
+                config.hat.die,
+                enable_hat=config.hat.enable_hat_rolls,
+                enable_generic=config.hat.enable_generic_rolls,
+            )
+            await interaction.response.send_message(help_text, ephemeral=True)
+            return
+
         try:
             request = parse_hat_command(
                 args,

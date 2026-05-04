@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 HIT_KEYWORD = "hit"
 HIT_DIE = 100
 HIT_MAX_COUNT = 9  # "Xhit" / "X hit" / "hitX" / "hit X" require X < 10
+HELP_KEYWORD = "help"
 
 MAX_GROUPS = 20      # Z
 MAX_DIE_COUNT = 1000  # X
@@ -154,6 +155,83 @@ _GENERIC_RE = re.compile(
 
 _STICKY_HIT_BEFORE_RE = re.compile(r"^(\d+)hit$", re.IGNORECASE)
 _STICKY_HIT_AFTER_RE = re.compile(r"^hit(\d+)$", re.IGNORECASE)
+
+
+def is_help_command(text: str | None) -> bool:
+    """Return True when ``text`` is a ``/hat help`` invocation.
+
+    Accepts the bare argument (``help``), a leading-slash form
+    (``/hat help``), or the no-slash equivalent (``hat help``). Trailing
+    tokens are ignored so ``help me`` / ``/hat help rolls`` also count.
+    """
+    if not text:
+        return False
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if lowered.startswith("/hat"):
+        cleaned = cleaned[len("/hat"):].strip()
+    elif lowered.startswith("hat "):
+        cleaned = cleaned[len("hat"):].strip()
+    if not cleaned:
+        return False
+    first = cleaned.split(None, 1)[0].lower()
+    return first == HELP_KEYWORD
+
+
+def format_hat_help(
+    hat_die: int,
+    *,
+    enable_hat: bool,
+    enable_generic: bool,
+) -> str:
+    """Render the user-visible ``/hat help`` reply.
+
+    The body is gated by which parsers are enabled in config so users
+    only see examples that will actually work.
+    """
+    lines: list[str] = ["**`/hat` command — dice rolling**", ""]
+
+    if enable_hat:
+        lines.append(f"__Hat shorthand__ (rolls `1d{hat_die}` plus a modifier):")
+        lines.append(f"\u2022 `/hat 52` \u2192 1d{hat_die}+52")
+        lines.append(
+            f"\u2022 `/hat 3 33` \u2192 3 sets of 1d{hat_die}+33"
+        )
+        lines.append("\u2022 `/hat hit` \u2192 1d100")
+        lines.append(
+            "\u2022 `/hat 3 hit` or `/hat 3hit` \u2192 3 sets of 1d100"
+        )
+        lines.append(
+            "\u2022 `/hat hit 3` or `/hat hit3` \u2192 3 sets of 1d100"
+        )
+        lines.append("")
+
+    if enable_generic:
+        lines.append("__Generic dice__ (`Z XdY[+/-#]`):")
+        lines.append("\u2022 `/hat d20` \u2192 1d20")
+        lines.append("\u2022 `/hat 3d6+2` \u2192 3d6+2")
+        lines.append("\u2022 `/hat 2 4d8` \u2192 2 sets of 4d8")
+        lines.append("\u2022 `/hat 3 d10+1` \u2192 3 sets of 1d10+1")
+        lines.append(
+            f"Limits: Z\u2264{MAX_GROUPS}, X\u2264{MAX_DIE_COUNT}, "
+            f"Y\u2264{MAX_DIE_SIZE}, |modifier|\u2264{MAX_MODIFIER}."
+        )
+        lines.append("")
+
+    if not enable_hat and not enable_generic:
+        lines.append(
+            "_All roll parsers are currently disabled in config._"
+        )
+        lines.append("")
+
+    lines.append(
+        "Any extra words after the dice are kept as a *reason* and "
+        "echoed back in the reply (e.g. `/hat 3d6 fire damage`)."
+    )
+    lines.append("Use `/hat help` to see this message again.")
+    return "\n".join(lines).rstrip()
 
 
 def _try_int(token: str | None) -> int | None:
@@ -400,7 +478,9 @@ __all__ = [
     "HatRequest",
     "HatResult",
     "RollGroup",
+    "format_hat_help",
     "format_hat_message",
+    "is_help_command",
     "parse_hat_command",
     "roll_hat",
 ]
