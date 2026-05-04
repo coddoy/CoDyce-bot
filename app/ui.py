@@ -265,7 +265,10 @@ class ControlPanel:
 
         hint = self._tk.Label(
             bar,
-            text="e.g.  `52`   `3 33`   `hit`   `3 hit`   `3hit`",
+            text=(
+                "e.g.  `52`   `3 33`   `hit`   `3 hit`   `3hit`"
+                "      (trailing text becomes the roll's Reason)"
+            ),
         )
         hint.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 

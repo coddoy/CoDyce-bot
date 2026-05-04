@@ -13,6 +13,13 @@ Supported syntax (case-insensitive, leading ``/hat`` optional)::
     <count> hit           # count d100
     <count>hit            # count d100  (sticky form)
 
+Any trailing text after the matched prefix is captured verbatim as the
+roll's *reason* and echoed back in the formatted reply, e.g.::
+
+    /hat 52 attack with sword     -> 1d32+52, reason "attack with sword"
+    /hat 3 33 burst fire          -> 3 d32+33, reason "burst fire"
+    /hat 3 hit aoe                -> 3 d100,   reason "aoe"
+
 Examples (with ``config.hat.die == 32``)::
 
     /hat 52        -> 1d32+52
@@ -44,6 +51,7 @@ class HatRequest:
     die: int
     modifier: int
     is_hit: bool = False
+    reason: str = ""
 
     def __post_init__(self) -> None:
         if self.count < 1:
@@ -72,11 +80,23 @@ class HatResult:
 _STICKY_HIT_RE = re.compile(r"^(\d+)hit$", re.IGNORECASE)
 
 
+def _try_int(token: str) -> int | None:
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+
 def parse_hat_command(text: str, default_die: int) -> HatRequest:
     """Parse a raw ``/hat`` command string into a :class:`HatRequest`.
 
     Accepts an optional leading ``/hat`` (or ``hat``) prefix so users
     can paste either form into the demo entry box.
+
+    The matched prefix is consumed greedily (numbers and/or the ``hit``
+    keyword); any tokens left over are joined into
+    :attr:`HatRequest.reason` so callers can render a free-form note
+    alongside the roll.
     """
     if text is None:
         raise HatCommandError("No command provided.")
@@ -98,48 +118,64 @@ def parse_hat_command(text: str, default_die: int) -> HatRequest:
             "Missing arguments. Try `52`, `3 33`, `hit`, or `3 hit`."
         )
 
-    raw_parts = cleaned.split()
+    tokens = cleaned.split()
+    first = tokens[0]
 
-    # Expand sticky "Nhit" into ["N", "hit"] so the rest of the parser
-    # only ever sees space-separated tokens.
-    parts: list[str] = []
-    for token in raw_parts:
-        match = _STICKY_HIT_RE.match(token)
-        if match:
-            parts.append(match.group(1))
-            parts.append(HIT_KEYWORD)
-        else:
-            parts.append(token)
-
-    is_hit = any(p.lower() == HIT_KEYWORD for p in parts)
-    nums_raw = [p for p in parts if p.lower() != HIT_KEYWORD]
-
-    nums: list[int] = []
-    for token in nums_raw:
-        try:
-            nums.append(int(token))
-        except ValueError as exc:
+    # Greedy prefix match — pick the longest pattern the leading tokens
+    # satisfy, then everything else falls through to the reason.
+    sticky = _STICKY_HIT_RE.match(first)
+    if sticky:
+        consumed = 1
+        request_kwargs: dict = {
+            "count": int(sticky.group(1)),
+            "die": HIT_DIE,
+            "modifier": 0,
+            "is_hit": True,
+        }
+    elif first.lower() == HIT_KEYWORD:
+        consumed = 1
+        request_kwargs = {
+            "count": 1,
+            "die": HIT_DIE,
+            "modifier": 0,
+            "is_hit": True,
+        }
+    else:
+        first_int = _try_int(first)
+        if first_int is None:
             raise HatCommandError(
-                f"Could not understand `{token}`. "
-                "Use integers (and optionally `hit`)."
-            ) from exc
-
-    if is_hit:
-        if len(nums) > 1:
-            raise HatCommandError(
-                "`hit` rolls accept at most one number (the count)."
+                f"Could not understand `{first}`. "
+                "Start with an integer (and optionally `hit`)."
             )
-        count = nums[0] if nums else 1
-        return HatRequest(count=count, die=HIT_DIE, modifier=0, is_hit=True)
 
-    if len(nums) == 1:
-        return HatRequest(count=1, die=default_die, modifier=nums[0])
-    if len(nums) == 2:
-        return HatRequest(count=nums[0], die=default_die, modifier=nums[1])
+        second = tokens[1] if len(tokens) >= 2 else None
+        second_int = _try_int(second) if second is not None else None
 
-    raise HatCommandError(
-        "Expected `<modifier>`, `<count> <modifier>`, or a `hit` form."
-    )
+        if second is not None and second.lower() == HIT_KEYWORD:
+            consumed = 2
+            request_kwargs = {
+                "count": first_int,
+                "die": HIT_DIE,
+                "modifier": 0,
+                "is_hit": True,
+            }
+        elif second_int is not None:
+            consumed = 2
+            request_kwargs = {
+                "count": first_int,
+                "die": default_die,
+                "modifier": second_int,
+            }
+        else:
+            consumed = 1
+            request_kwargs = {
+                "count": 1,
+                "die": default_die,
+                "modifier": first_int,
+            }
+
+    reason = " ".join(tokens[consumed:]).strip()
+    return HatRequest(reason=reason, **request_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -167,17 +203,21 @@ def format_hat_message(player: str, result: HatResult) -> str:
     """Render the player-visible reply for a completed roll."""
     req = result.request
     mod_str = _format_modifier(req.modifier)
+    reason_str = f" Reason: {req.reason}" if req.reason else ""
 
     if req.count == 1:
         formula = f"1d{req.die}{mod_str}"
         roll = result.rolls[0]
         total = roll + req.modifier
-        return f"\U0001F3B2 {player} Request: {formula} Roll: [{roll}] = {total}"
+        return (
+            f"\U0001F3B2 {player} Request: {formula}{reason_str} "
+            f"Roll: [{roll}] = {total}"
+        )
 
     # Multi-roll form: matches the spec'd "<count> d<die><mod>" with a
     # single space between the count and the die expression.
     formula = f"{req.count} d{req.die}{mod_str}"
-    lines = [f"\U0001F3B2 {player} Request: {formula}"]
+    lines = [f"\U0001F3B2 {player} Request: {formula}{reason_str}"]
     for index, roll in enumerate(result.rolls, start=1):
         total = roll + req.modifier
         lines.append(f"Set {index}: Roll: [{roll}] = {total}")

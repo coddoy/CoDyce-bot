@@ -88,11 +88,14 @@ def build_client(config: AppConfig):
         name="hat",
         description=(
             f"Roll the hat dice (default d{config.hat.die}). "
-            "Examples: 52 | 3 33 | hit | 3 hit"
+            "Examples: 52 | 3 33 | hit | 3 hit | 52 attack with sword"
         ),
     )
     @app_commands.describe(
-        args="Args after /hat. Examples: `52`, `3 33`, `hit`, `3 hit`, `3hit`."
+        args=(
+            "Args after /hat. Examples: `52`, `3 33`, `hit`, `3 hit`, `3hit`. "
+            "Any text after the matched portion is shown as the roll's reason."
+        )
     )
     async def hat_cmd(
         interaction: "discord.Interaction", args: str
