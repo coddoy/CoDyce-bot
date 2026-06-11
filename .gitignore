@@ -1,6 +1,7 @@
 # Secrets / local config
 credentials.json
 config.json
+hat_user_prefs.json
 *.local.json
 .env
 .env.*
