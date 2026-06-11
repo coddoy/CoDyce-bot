@@ -1,8 +1,9 @@
 """Discord slash-command bot.
 
-Registers ``/hat`` as a real Discord slash command and routes it through
-the same parser/roller/formatter the demo UI uses (:mod:`app.hat`), so
-the in-channel reply matches the demo output line-for-line.
+Registers ``/hat`` and ``/hit`` as Discord slash commands and routes
+them through the same parser/roller/formatter the demo UI uses
+(:mod:`app.hat`), so the in-channel reply matches the demo output
+line-for-line.
 
 Setup checklist:
   1. Create an application at https://discord.com/developers/applications
@@ -28,16 +29,27 @@ are still used for outbound skill-update messages.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from .config import AppConfig
 from .hat import (
     HatCommandError,
+    NiceDailyTracker,
     format_hat_help,
-    format_hat_message,
+    format_hat_message_with_nice,
+    format_hat_status,
+    format_hat_status_all,
+    format_set_dice_confirmation,
     is_help_command,
+    is_set_dice_command,
+    is_status_command,
     parse_hat_command,
+    parse_hit_command,
+    parse_set_dice_command,
     roll_hat,
+    status_wants_all,
 )
+from .hat_prefs import DEFAULT_PREFS_FILENAME, HatUserPrefsStore
 
 log = logging.getLogger(__name__)
 
@@ -93,8 +105,52 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "\u2026"
 
 
-def build_client(config: AppConfig):
-    """Construct a configured :class:`discord.Client` with ``/hat`` registered.
+def _display_name(interaction: "discord.Interaction") -> str:
+    return (
+        interaction.user.display_name
+        or interaction.user.name
+        or "Roller"
+    )
+
+
+async def _send_roll_reply(
+    interaction: "discord.Interaction",
+    *,
+    player: str,
+    user_id: int,
+    request: "HatRequest",
+    prefs: HatUserPrefsStore,
+    nice_tracker: NiceDailyTracker,
+    log_label: str,
+) -> None:
+    """Roll dice and reply; shared by ``/hat`` and ``/hit``."""
+    try:
+        result = roll_hat(request)
+        prefs.touch_display_name(user_id, player)
+        message = format_hat_message_with_nice(
+            player, result, nice_tracker
+        )
+        await interaction.response.send_message(message)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Unexpected %s failure", log_label)
+        try:
+            await interaction.response.send_message(
+                f"\u274C Unexpected error: {exc}"
+            )
+        except Exception:  # noqa: BLE001
+            await interaction.followup.send(
+                f"\u274C Unexpected error: {exc}"
+            )
+
+
+def build_client(
+    config: AppConfig,
+    *,
+    prefs_path: Path | None = None,
+):
+    """Construct a configured :class:`discord.Client` with slash commands.
+
+    Registers ``/hat`` and ``/hit`` (when hat rolls are enabled).
 
     Importing :mod:`discord` is deferred so the rest of the app (UI,
     sheets, etc.) still works in environments where discord.py isn't
@@ -111,6 +167,9 @@ def build_client(config: AppConfig):
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
+    nice_tracker = NiceDailyTracker()
+    prefs = HatUserPrefsStore(prefs_path or Path(DEFAULT_PREFS_FILENAME))
+    prefs.load()
 
     guild_objs = [discord.Object(id=gid) for gid in config.discord.guild_ids]
 
@@ -140,53 +199,130 @@ def build_client(config: AppConfig):
     async def hat_cmd(
         interaction: "discord.Interaction", args: str
     ) -> None:  # pragma: no cover - network side-effect
+        user_id = interaction.user.id
+        player = _display_name(interaction)
+        hat_die = prefs.effective_die(user_id, config.hat.die)
+
         if is_help_command(args):
             help_text = format_hat_help(
-                config.hat.die,
+                hat_die,
                 enable_hat=config.hat.enable_hat_rolls,
                 enable_generic=config.hat.enable_generic_rolls,
             )
-            await interaction.response.send_message(help_text, ephemeral=True)
+            await interaction.response.send_message(help_text)
+            return
+
+        if is_set_dice_command(args):
+            try:
+                die = parse_set_dice_command(args)
+            except HatCommandError as exc:
+                await interaction.response.send_message(
+                    f"\u274C `{args}` — {exc}"
+                )
+                return
+
+            prefs.set_die(user_id, die, player)
+            prefs.save()
+            await interaction.response.send_message(
+                format_set_dice_confirmation(player, die)
+            )
+            return
+
+        if is_status_command(args):
+            try:
+                wants_all = status_wants_all(args)
+            except HatCommandError as exc:
+                await interaction.response.send_message(
+                    f"\u274C `{args}` — {exc}"
+                )
+                return
+
+            if wants_all:
+                message = format_hat_status_all(prefs.list_overrides())
+            else:
+                message = format_hat_status(
+                    player,
+                    hat_die,
+                    is_override=prefs.get_die(user_id) is not None,
+                )
+            await interaction.response.send_message(message)
             return
 
         try:
             request = parse_hat_command(
                 args,
-                config.hat.die,
+                hat_die,
                 enable_hat=config.hat.enable_hat_rolls,
                 enable_generic=config.hat.enable_generic_rolls,
             )
         except HatCommandError as exc:
             await interaction.response.send_message(
-                f"\u274C `{args}` — {exc}", ephemeral=True
+                f"\u274C `{args}` — {exc}"
             )
             return
 
-        try:
-            result = roll_hat(request)
-            display_name = (
-                interaction.user.display_name
-                or interaction.user.name
-                or "Roller"
+        await _send_roll_reply(
+            interaction,
+            player=player,
+            user_id=user_id,
+            request=request,
+            prefs=prefs,
+            nice_tracker=nice_tracker,
+            log_label="/hat",
+        )
+
+    if config.hat.enable_hat_rolls:
+
+        @tree.command(
+            name="hit",
+            description=(
+                "Roll d100 hit location (same as `/hat hit`). "
+                "Ex: (empty) | 3 | 3hit | fireball"
+            ),
+        )
+        @app_commands.describe(
+            args=(
+                "Optional count (1–9), sticky forms (`3hit`, `hit3`), "
+                "or reason text. Empty = one roll."
             )
-            message = format_hat_message(display_name, result)
-            await interaction.response.send_message(message)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Unexpected /hat failure")
+        )
+        async def hit_cmd(
+            interaction: "discord.Interaction",
+            args: str = "",
+        ) -> None:  # pragma: no cover - network side-effect
+            user_id = interaction.user.id
+            player = _display_name(interaction)
+
             try:
+                request = parse_hit_command(
+                    args,
+                    enable_hat=config.hat.enable_hat_rolls,
+                )
+            except HatCommandError as exc:
+                label = args if args else "(empty)"
                 await interaction.response.send_message(
-                    f"\u274C Unexpected error: {exc}", ephemeral=True
+                    f"\u274C `{label}` — {exc}"
                 )
-            except Exception:  # noqa: BLE001
-                # If we already responded somewhere, fall back to followup.
-                await interaction.followup.send(
-                    f"\u274C Unexpected error: {exc}", ephemeral=True
-                )
+                return
+
+            await _send_roll_reply(
+                interaction,
+                player=player,
+                user_id=user_id,
+                request=request,
+                prefs=prefs,
+                nice_tracker=nice_tracker,
+                log_label="/hit",
+            )
 
     return client
 
 
-def run_bot(config: AppConfig) -> None:
+def run_bot(
+    config: AppConfig,
+    *,
+    prefs_path: Path | None = None,
+) -> None:
     """Connect to Discord and serve slash commands until interrupted.
 
     Blocks the calling thread. Press Ctrl-C to stop.
@@ -198,7 +334,7 @@ def run_bot(config: AppConfig) -> None:
             "See app/bot.py docstring for setup steps."
         )
 
-    client = build_client(config)
+    client = build_client(config, prefs_path=prefs_path)
     guild_label = (
         ",".join(str(g) for g in config.discord.guild_ids)
         if config.discord.guild_ids

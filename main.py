@@ -30,6 +30,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from app.bot import HatBotError, run_bot
+from app.hat_prefs import default_prefs_path
 from app.config import (
     AppConfig,
     ConfigError,
@@ -111,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.bot:
         try:
-            run_bot(config)
+            run_bot(config, prefs_path=default_prefs_path(args.config))
         except HatBotError as exc:
             logging.error("Bot error: %s", exc)
             return 2
