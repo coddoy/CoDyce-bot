@@ -302,12 +302,10 @@ def format_hat_help(
         lines.append(
             f"\u2022 `/hat 3 33` \u2192 3 sets of 1d{hat_die}+33"
         )
-        lines.append("\u2022 `/hat hit` \u2192 1d100")
+        lines.append("\u2022 `/hat hit` or `/hit` \u2192 1d100")
         lines.append(
-            "\u2022 `/hat 3 hit` or `/hat 3hit` \u2192 3 sets of 1d100"
-        )
-        lines.append(
-            "\u2022 `/hat hit 3` or `/hat hit3` \u2192 3 sets of 1d100"
+            "\u2022 `/hat 3 hit` or `/hit 3` (also `3hit`, `hit3`) "
+            "\u2192 3 sets of 1d100"
         )
         lines.append("")
 
@@ -528,6 +526,53 @@ def _build_hit_request(count: int, rest_tokens: list[str]) -> HatRequest:
     )
 
 
+def normalize_hit_command_args(text: str | None) -> str:
+    """Convert ``/hit`` slash-command args into hat-parser hit shorthand.
+
+    Maps bare ``/hit`` to ``hit``, ``/hit 3`` to ``3 hit``, and
+    ``/hit fireball`` to ``hit fireball``, so the result can be fed
+    through :func:`parse_hit_command` unchanged.
+    """
+    if text is None:
+        return HIT_KEYWORD
+    cleaned = text.strip()
+    if not cleaned:
+        return HIT_KEYWORD
+
+    tokens = cleaned.split()
+    first = tokens[0]
+
+    if _matches_keyword(first, HIT_KEYWORD):
+        return cleaned
+    if _STICKY_HIT_BEFORE_RE.match(first) or _STICKY_HIT_AFTER_RE.match(first):
+        return cleaned
+
+    n = _try_int(first)
+    if n is not None:
+        rest = tokens[1:]
+        if rest and _matches_keyword(rest[0], HIT_KEYWORD):
+            return cleaned
+        reason = " ".join(rest).strip()
+        suffix = f" {reason}" if reason else ""
+        return f"{first} {HIT_KEYWORD}{suffix}"
+
+    return f"{HIT_KEYWORD} {cleaned}"
+
+
+def parse_hit_command(
+    text: str | None,
+    *,
+    enable_hat: bool = True,
+) -> HatRequest:
+    """Parse a ``/hit`` command (equivalent to ``/hat hit`` / ``/hat <n> hit``)."""
+    if not enable_hat:
+        raise HatCommandError(
+            "Hit rolls require hat shorthand, which is disabled in config."
+        )
+    normalized = normalize_hit_command_args(text)
+    return _parse_hat_form(normalized, hat_die=0)
+
+
 # ---------------------------------------------------------------------------
 # Rolling
 # ---------------------------------------------------------------------------
@@ -706,7 +751,9 @@ __all__ = [
     "is_help_command",
     "is_set_dice_command",
     "is_status_command",
+    "normalize_hit_command_args",
     "parse_hat_command",
+    "parse_hit_command",
     "parse_set_dice_command",
     "roll_hat",
     "status_wants_all",
