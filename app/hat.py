@@ -49,11 +49,15 @@ from __future__ import annotations
 import random
 import re
 from dataclasses import dataclass, field
+from datetime import date
 
 HIT_KEYWORD = "hit"
 HIT_DIE = 100
 HIT_MAX_COUNT = 9  # "Xhit" / "X hit" / "hitX" / "hit X" require X < 10
 HELP_KEYWORD = "help"
+SET_DICE_KEYWORD = "setdice"
+STATUS_KEYWORD = "status"
+NICE_TOTAL = 69
 
 MAX_GROUPS = 20      # Z
 MAX_DIE_COUNT = 1000  # X
@@ -194,6 +198,91 @@ def is_help_command(text: str | None) -> bool:
     return _first_token(text) == HELP_KEYWORD
 
 
+def is_set_dice_command(text: str | None) -> bool:
+    """Return True when ``text`` is a ``/hat setDice`` invocation."""
+    if not text:
+        return False
+    return _first_token(text) == SET_DICE_KEYWORD
+
+
+def is_status_command(text: str | None) -> bool:
+    """Return True when ``text`` is a ``/hat status`` invocation."""
+    if not text:
+        return False
+    return _first_token(text) == STATUS_KEYWORD
+
+
+def _validate_die_size(die: int) -> None:
+    """Raise :class:`HatCommandError` when ``die`` is out of range."""
+    RollGroup(count=1, die=die, modifier=0)
+
+
+def parse_set_dice_command(text: str) -> int:
+    """Parse ``/hat setDice <size>`` and return the die size."""
+    cleaned = _strip_hat_prefix(text)
+    if not cleaned:
+        raise HatCommandError("Usage: `/hat setDice <size>` (e.g. `/hat setDice 64`).")
+
+    tokens = cleaned.split()
+    if not _matches_keyword(tokens[0], SET_DICE_KEYWORD):
+        raise HatCommandError("Not a setDice command.")
+
+    if len(tokens) < 2:
+        raise HatCommandError(
+            "Usage: `/hat setDice <size>` (e.g. `/hat setDice 64`)."
+        )
+
+    die = _try_int(tokens[1])
+    if die is None:
+        raise HatCommandError(f"`{tokens[1]}` is not a valid die size.")
+
+    if len(tokens) > 2:
+        raise HatCommandError(
+            "Usage: `/hat setDice <size>` — no extra arguments."
+        )
+
+    _validate_die_size(die)
+    return die
+
+
+def status_wants_all(text: str) -> bool:
+    """Return True when ``text`` is ``/hat status --all``."""
+    cleaned = _strip_hat_prefix(text)
+    tokens = cleaned.split()
+    if not tokens or not _matches_keyword(tokens[0], STATUS_KEYWORD):
+        raise HatCommandError("Not a status command.")
+
+    wants_all = False
+    for token in tokens[1:]:
+        if _matches_keyword(token, "--all"):
+            wants_all = True
+            continue
+        raise HatCommandError(
+            f"Unknown status option `{token}`. "
+            "Try `/hat status` or `/hat status --all`."
+        )
+    return wants_all
+
+
+def format_set_dice_confirmation(player: str, die: int) -> str:
+    return f"{player} set their default hat die to **d{die}**."
+
+
+def format_hat_status(player: str, die: int, *, is_override: bool) -> str:
+    if is_override:
+        return f"{player}'s default hat die is **d{die}**."
+    return f"{player}'s default hat die is **d{die}** (server default)."
+
+
+def format_hat_status_all(entries: list[tuple[str, int]]) -> str:
+    if not entries:
+        return "No custom default dice set."
+    lines = ["**Custom default hat dice:**"]
+    for name, die in entries:
+        lines.append(f"\u2022 {name}: d{die}")
+    return "\n".join(lines)
+
+
 def format_hat_help(
     hat_die: int,
     *,
@@ -237,6 +326,18 @@ def format_hat_help(
     if not enable_hat and not enable_generic:
         lines.append(
             "_All roll parsers are currently disabled in config._"
+        )
+        lines.append("")
+
+    if enable_hat:
+        lines.append("__Preferences__ (hat shorthand only):")
+        lines.append(
+            "\u2022 `/hat setDice 64` \u2014 set your default die "
+            "for `/hat 52` and `/hat 3 33`"
+        )
+        lines.append(
+            "\u2022 `/hat status` \u2014 show your current default die; "
+            "`--all` lists every player's custom default"
         )
         lines.append("")
 
@@ -474,6 +575,61 @@ def _format_hit_location_suffix(rolls: tuple[int, ...]) -> str:
     return f" ({', '.join(parts)})"
 
 
+def _format_total_suffix(
+    total: int,
+    *,
+    hit_suffix: str,
+    show_nice: bool,
+) -> str:
+    """Render ``= {total}`` trailing text (hit location, optional *Nice!*)."""
+    nice_suffix = " _Nice!_" if show_nice else ""
+    return f"{total}{hit_suffix}{nice_suffix}"
+
+
+class NiceDailyTracker:
+    """Track the first daily roll of :data:`NICE_TOTAL` per player.
+
+    State is in-memory only; a process restart clears the record.
+    """
+
+    def __init__(self) -> None:
+        self._last_nice_day: dict[str, date] = {}
+
+    def nice_groups_for(
+        self,
+        player_key: str,
+        result: HatResult,
+        *,
+        when: date | None = None,
+    ) -> frozenset[int]:
+        """Return group indices that earn ``_Nice!_`` for this roll.
+
+        At most one group is returned, and only when ``player_key`` has
+        not already rolled :data:`NICE_TOTAL` today. Within a multi-group
+        roll, the earliest qualifying set wins.
+        """
+        day = when or date.today()
+        if self._last_nice_day.get(player_key) == day:
+            return frozenset()
+        for index in range(len(result.group_rolls)):
+            if result.total_for(index) == NICE_TOTAL:
+                self._last_nice_day[player_key] = day
+                return frozenset({index})
+        return frozenset()
+
+
+def format_hat_message_with_nice(
+    player: str,
+    result: HatResult,
+    tracker: NiceDailyTracker,
+    *,
+    when: date | None = None,
+) -> str:
+    """Format a roll reply, applying the daily *Nice!* easter egg."""
+    nice_groups = tracker.nice_groups_for(player, result, when=when)
+    return format_hat_message(player, result, nice_groups=nice_groups)
+
+
 def _format_group_expr(group: RollGroup, *, leading_one: bool) -> str:
     """Render a group as ``XdY+/-#``.
 
@@ -490,10 +646,16 @@ def _format_group_expr(group: RollGroup, *, leading_one: bool) -> str:
     return f"d{group.die}{mod}"
 
 
-def format_hat_message(player: str, result: HatResult) -> str:
+def format_hat_message(
+    player: str,
+    result: HatResult,
+    *,
+    nice_groups: frozenset[int] | None = None,
+) -> str:
     """Render the player-visible reply for a completed roll."""
     req = result.request
     reason_str = f" Reason: {req.reason}" if req.reason else ""
+    nice = nice_groups or frozenset()
 
     if req.num_groups == 1:
         group = req.groups[0]
@@ -502,9 +664,12 @@ def format_hat_message(player: str, result: HatResult) -> str:
         rolls_str = ", ".join(str(r) for r in rolls)
         total = result.total_for(0)
         hit_suffix = _format_hit_location_suffix(rolls) if req.is_hit else ""
+        total_suffix = _format_total_suffix(
+            total, hit_suffix=hit_suffix, show_nice=0 in nice
+        )
         return (
             f"\U0001F3B2 {player} Request: {formula}{reason_str} "
-            f"Roll: [{rolls_str}] = {total}{hit_suffix}"
+            f"Roll: [{rolls_str}] = {total_suffix}"
         )
 
     # Multi-group form. All groups share their X/Y/modifier, so the
@@ -516,7 +681,12 @@ def format_hat_message(player: str, result: HatResult) -> str:
         rolls_str = ", ".join(str(r) for r in rolls)
         total = result.total_for(index - 1)
         hit_suffix = _format_hit_location_suffix(rolls) if req.is_hit else ""
-        lines.append(f"Set {index}: Roll: [{rolls_str}] = {total}{hit_suffix}")
+        total_suffix = _format_total_suffix(
+            total,
+            hit_suffix=hit_suffix,
+            show_nice=(index - 1) in nice,
+        )
+        lines.append(f"Set {index}: Roll: [{rolls_str}] = {total_suffix}")
     return "\n".join(lines)
 
 
@@ -524,10 +694,20 @@ __all__ = [
     "HatCommandError",
     "HatRequest",
     "HatResult",
+    "NICE_TOTAL",
+    "NiceDailyTracker",
     "RollGroup",
     "format_hat_help",
     "format_hat_message",
+    "format_hat_message_with_nice",
+    "format_hat_status",
+    "format_hat_status_all",
+    "format_set_dice_confirmation",
     "is_help_command",
+    "is_set_dice_command",
+    "is_status_command",
     "parse_hat_command",
+    "parse_set_dice_command",
     "roll_hat",
+    "status_wants_all",
 ]
