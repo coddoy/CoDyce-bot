@@ -451,6 +451,29 @@ def _format_modifier(modifier: int) -> str:
     return ""
 
 
+def _hit_body_part(d100: int) -> str:
+    """Map a d100 hit roll (1–100) to the struck body part."""
+    if d100 <= 10:
+        return "Head"
+    if d100 <= 40:
+        return "Body"
+    if d100 <= 55:
+        return "R Arm"
+    if d100 <= 70:
+        return "L Arm"
+    if d100 <= 85:
+        return "R Leg"
+    return "L Leg"
+
+
+def _format_hit_location_suffix(rolls: tuple[int, ...]) -> str:
+    """Append `` (Body Part)`` for hit rolls; multiple dice → comma-separated inside parens."""
+    if not rolls:
+        return ""
+    parts = [_hit_body_part(r) for r in rolls]
+    return f" ({', '.join(parts)})"
+
+
 def _format_group_expr(group: RollGroup, *, leading_one: bool) -> str:
     """Render a group as ``XdY+/-#``.
 
@@ -478,9 +501,10 @@ def format_hat_message(player: str, result: HatResult) -> str:
         rolls = result.group_rolls[0]
         rolls_str = ", ".join(str(r) for r in rolls)
         total = result.total_for(0)
+        hit_suffix = _format_hit_location_suffix(rolls) if req.is_hit else ""
         return (
             f"\U0001F3B2 {player} Request: {formula}{reason_str} "
-            f"Roll: [{rolls_str}] = {total}"
+            f"Roll: [{rolls_str}] = {total}{hit_suffix}"
         )
 
     # Multi-group form. All groups share their X/Y/modifier, so the
@@ -491,7 +515,8 @@ def format_hat_message(player: str, result: HatResult) -> str:
     for index, rolls in enumerate(result.group_rolls, start=1):
         rolls_str = ", ".join(str(r) for r in rolls)
         total = result.total_for(index - 1)
-        lines.append(f"Set {index}: Roll: [{rolls_str}] = {total}")
+        hit_suffix = _format_hit_location_suffix(rolls) if req.is_hit else ""
+        lines.append(f"Set {index}: Roll: [{rolls_str}] = {total}{hit_suffix}")
     return "\n".join(lines)
 
 
