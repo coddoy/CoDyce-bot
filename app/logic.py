@@ -22,7 +22,8 @@ from .hat import (
     HatCommandError,
     HatRequest,
     HatResult,
-    format_hat_message,
+    NiceDailyTracker,
+    format_hat_message_with_nice,
     parse_hat_command,
     roll_hat,
 )
@@ -88,10 +89,12 @@ class AppService:
         config: AppConfig,
         sheets: SheetsBackend,
         notifier: NotifierBackend | None = None,
+        nice_tracker: NiceDailyTracker | None = None,
     ) -> None:
         self.config = config
         self._sheets = sheets
         self._notifier: NotifierBackend = notifier or DiscordNotifier(config.discord)
+        self._nice_tracker = nice_tracker or NiceDailyTracker()
 
     @property
     def player_names(self) -> list[str]:
@@ -163,7 +166,9 @@ class AppService:
             enable_generic=hat_cfg.enable_generic_rolls,
         )
         result = roll_hat(request)
-        message = format_hat_message(player_name, result)
+        message = format_hat_message_with_nice(
+            player_name, result, self._nice_tracker
+        )
         return HatRollResult(
             player=player_name,
             request=request,
