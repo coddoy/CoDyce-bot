@@ -157,6 +157,31 @@ _STICKY_HIT_BEFORE_RE = re.compile(r"^(\d+)hit$", re.IGNORECASE)
 _STICKY_HIT_AFTER_RE = re.compile(r"^hit(\d+)$", re.IGNORECASE)
 
 
+def _strip_hat_prefix(text: str) -> str:
+    """Drop a leading ``/hat`` or ``hat`` prefix from command text."""
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if lowered.startswith("/hat"):
+        return cleaned[len("/hat"):].strip()
+    if lowered.startswith("hat "):
+        return cleaned[len("hat"):].strip()
+    return cleaned
+
+
+def _matches_keyword(token: str, keyword: str) -> bool:
+    """Return whether ``token`` equals ``keyword``."""
+    return token.lower() == keyword.lower()
+
+
+def _first_token(text: str) -> str | None:
+    cleaned = _strip_hat_prefix(text)
+    if not cleaned:
+        return None
+    return cleaned.split(None, 1)[0].lower()
+
+
 def is_help_command(text: str | None) -> bool:
     """Return True when ``text`` is a ``/hat help`` invocation.
 
@@ -166,18 +191,7 @@ def is_help_command(text: str | None) -> bool:
     """
     if not text:
         return False
-    cleaned = text.strip()
-    if not cleaned:
-        return False
-    lowered = cleaned.lower()
-    if lowered.startswith("/hat"):
-        cleaned = cleaned[len("/hat"):].strip()
-    elif lowered.startswith("hat "):
-        cleaned = cleaned[len("hat"):].strip()
-    if not cleaned:
-        return False
-    first = cleaned.split(None, 1)[0].lower()
-    return first == HELP_KEYWORD
+    return _first_token(text) == HELP_KEYWORD
 
 
 def format_hat_help(
@@ -259,16 +273,7 @@ def parse_hat_command(
     if text is None:
         raise HatCommandError("No command provided.")
 
-    cleaned = text.strip()
-    if not cleaned:
-        raise HatCommandError(_empty_help(enable_hat, enable_generic))
-
-    lowered = cleaned.lower()
-    if lowered.startswith("/hat"):
-        cleaned = cleaned[len("/hat"):].strip()
-    elif lowered.startswith("hat "):
-        cleaned = cleaned[len("hat"):].strip()
-
+    cleaned = _strip_hat_prefix(text)
     if not cleaned:
         raise HatCommandError(_empty_help(enable_hat, enable_generic))
 
@@ -368,7 +373,7 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
             return _build_hit_request(count, tokens[1:])
 
     # Bare "hit" possibly followed by a small count
-    if first.lower() == HIT_KEYWORD:
+    if _matches_keyword(first, HIT_KEYWORD):
         count = 1
         rest = tokens[1:]
         if rest:
@@ -390,7 +395,7 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     # "X hit" (X must be 1..9)
     if (
         second is not None
-        and second.lower() == HIT_KEYWORD
+        and _matches_keyword(second, HIT_KEYWORD)
         and 1 <= first_int <= HIT_MAX_COUNT
     ):
         return _build_hit_request(first_int, tokens[2:])
