@@ -30,7 +30,7 @@ Two independent parsers feed the same command, gated by config flags
       …[reason text]        # free-form reason captured verbatim
 
   Z defaults to 1, X defaults to 1. Limits: ``Z <= 20``,
-  ``X <= 1000``, ``Y <= 1000``, ``|modifier| <= 1000``. Modifier
+  ``X <= 1000000``, ``Y <= 1000000``, ``|modifier| <= 1000000``. Modifier
   options may be tight (``3d6+2``) or spaced (``3d6 + 2``).
 
 Output form depends on group count:
@@ -60,9 +60,9 @@ STATUS_KEYWORD = "status"
 NICE_TOTAL = 69
 
 MAX_GROUPS = 20      # Z
-MAX_DIE_COUNT = 1000  # X
-MAX_DIE_SIZE = 1000   # Y
-MAX_MODIFIER = 1000   # |+/-#|
+MAX_DIE_COUNT = 1_000_000  # X
+MAX_DIE_SIZE = 1_000_000   # Y
+MAX_MODIFIER = 1_000_000   # |+/-#|
 
 
 class HatCommandError(ValueError):
