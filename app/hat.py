@@ -516,8 +516,21 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     return HatRequest(groups=(group,), is_hit=False, reason=reason)
 
 
+def _strip_leading_int_tokens(tokens: list[str]) -> list[str]:
+    """Drop leading bare integers from ``tokens``.
+
+    Hit rolls must not treat trailing numbers like a hat ``count modifier``
+    pair (e.g. ``/hit 3 123`` and ``/hat hit 123`` should act like a plain
+    hit, not ``/hat 3 123``). Non-numeric reason text is preserved.
+    """
+    i = 0
+    while i < len(tokens) and _try_int(tokens[i]) is not None:
+        i += 1
+    return tokens[i:]
+
+
 def _build_hit_request(count: int, rest_tokens: list[str]) -> HatRequest:
-    reason = " ".join(rest_tokens).strip()
+    reason = " ".join(_strip_leading_int_tokens(rest_tokens)).strip()
     group = RollGroup(count=1, die=HIT_DIE, modifier=0)
     return HatRequest(
         groups=_build_groups(group, count),
