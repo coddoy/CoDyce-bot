@@ -33,3 +33,7 @@ Thumbs.db
 
 # Agent tooling scratch (used by Cursor's web fetch cache)
 agent-tools/
+
+# Runtime logs (keep the directory via logs/.gitkeep)
+logs/*
+!logs/.gitkeep

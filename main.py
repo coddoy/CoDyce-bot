@@ -19,6 +19,8 @@ Flags:
   --bot            Run the Discord slash-command bot (no UI). Requires
                    --config to point at a file with a real bot_token.
   --log-level X    Standard Python logging level (default: INFO).
+  --log-dir PATH   Directory for rotating log files (default: logs/
+                   next to this script).
 """
 
 from __future__ import annotations
@@ -27,10 +29,8 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from tkinter import messagebox
 
 from app.bot import HatBotError, run_bot
-from app.hat_prefs import default_prefs_path
 from app.config import (
     AppConfig,
     ConfigError,
@@ -39,9 +39,10 @@ from app.config import (
     load_config,
     make_demo_config,
 )
+from app.hat_prefs import default_prefs_path
+from app.logging_setup import DEFAULT_LOG_DIR, configure_logging
 from app.logic import AppService, NullNotifier
 from app.sheets import FakeSheetsClient, SheetsClient
-from app.ui import run_app
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -64,6 +65,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Requires --config to point at a file with discord.bot_token set.",
     )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--log-dir",
+        default=str(DEFAULT_LOG_DIR),
+        help="Directory for rotating log files "
+        f"(default: {DEFAULT_LOG_DIR})",
+    )
     return parser.parse_args(argv)
 
 
@@ -93,21 +100,25 @@ def _resolve_config(config_path: str, *, live: bool, bot: bool) -> AppConfig:
     return make_demo_config()
 
 
+def _show_config_error(message: str) -> None:
+    """Best-effort GUI error dialog; silent when Tk is unavailable."""
+    try:
+        from tkinter import messagebox
+
+        messagebox.showerror("Config error", message)
+    except Exception:  # noqa: BLE001 - no display / no Tk available
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    configure_logging(args.log_level, log_dir=args.log_dir)
 
     try:
         config = _resolve_config(args.config, live=args.live, bot=args.bot)
     except ConfigError as exc:
         logging.error("Config error: %s", exc)
-        try:
-            messagebox.showerror("Config error", str(exc))
-        except Exception:  # noqa: BLE001 - no display available
-            pass
+        _show_config_error(str(exc))
         return 2
 
     if args.bot:
@@ -117,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             logging.error("Bot error: %s", exc)
             return 2
         return 0
+
+    from app.ui import run_app
 
     if args.live:
         sheets = SheetsClient(config)

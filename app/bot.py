@@ -347,6 +347,9 @@ def run_bot(
     )
     # ``client.run`` configures its own asyncio loop and signal handlers,
     # so this call blocks until the bot is shut down.
+    # ``log_handler=None`` skips discord.py's default StreamHandler so
+    # ``discord.*`` loggers inherit the root handlers from configure_logging
+    # (stderr + rotating file), including DEBUG gateway diagnostics.
     client.run(token, log_handler=None)
 
 

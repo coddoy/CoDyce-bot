@@ -64,7 +64,7 @@ STATUS_KEYWORD = "status"
 NICE_TOTAL = 69
 
 MAX_GROUPS = 20      # Z
-MAX_DIE_COUNT = 1_000_000  # X
+MAX_DIE_COUNT = 10_000     # X — capped for Pi / low-RAM hosts
 MAX_DIE_SIZE = 1_000_000   # Y
 MAX_MODIFIER = 1_000_000   # |+/-#|
 

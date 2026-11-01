@@ -1,4 +1,4 @@
 @echo off
-cd /d C:\Repos\DiscordBot
+cd /d "%~dp0"
 python main.py --bot
 pause

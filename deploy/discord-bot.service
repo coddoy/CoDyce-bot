@@ -1,0 +1,18 @@
+[Unit]
+Description=Discord skill-tracker / hat bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/DiscordBot
+ExecStart=/home/pi/DiscordBot/.venv/bin/python main.py --bot --log-level INFO
+Restart=on-failure
+RestartSec=5
+# Ensure relative config.json / credentials.json resolve here.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

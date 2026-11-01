@@ -15,12 +15,18 @@ channel each time a value changes.
 main.py                # entry point
 config.example.json    # copy to config.json and fill in
 requirements.txt
+start-bot.bat          # Windows bot launcher
+start-bot.sh           # Linux/macOS bot launcher
+deploy/discord-bot.service  # optional systemd unit (Raspberry Pi / Linux)
+logs/                  # rotating debug logs (bot.log); git-ignored contents
 app/
   config.py            # JSON config loader + dataclasses
   sheets.py            # gspread wrapper with per-player cache
   discord_notify.py    # webhook POST helper
   logic.py             # AppService — wires it all together
   ui.py                # Tkinter window (uses ttkbootstrap if installed)
+  logging_setup.py     # stderr + rotating file logging
+  bot.py               # Discord slash-command bot
 ```
 
 ## Setup
@@ -82,8 +88,75 @@ Useful flags:
 python main.py                      # demo mode (default)
 python main.py --config foo.json    # demo mode with a custom config file
 python main.py --live               # real Sheets + Discord (requires config.json)
+python main.py --bot                # Discord slash-command bot (no UI)
 python main.py --log-level DEBUG    # verbose logging
+python main.py --log-dir PATH       # rotating log directory (default: ./logs)
 ```
+
+Windows and Linux/macOS share the same commands. On Windows you can also double-click
+`start-bot.bat`; on Linux/macOS use `./start-bot.sh`.
+
+### Logging
+
+Logs go to **stderr** and to rotating files under `logs/` (next to `main.py`):
+
+* `logs/bot.log` — current file
+* `logs/bot.log.1` … `.5` — older rotations (5 MB each, ~30 MB max)
+
+Override the directory with `--log-dir`. Use `--log-level DEBUG` when you need
+gateway/reconnect detail from discord.py.
+
+## Raspberry Pi / headless
+
+The bot path does not need a display or Tk. Same Python entrypoint as on Windows.
+
+1. Copy the project to the Pi (e.g. `~/DiscordBot`), create a venv, install deps:
+
+```bash
+cd ~/DiscordBot
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Place `config.json` (and `credentials.json` only if you use Sheets/`--live`).
+   Restrict permissions on the bot host:
+
+```bash
+chmod 600 config.json credentials.json
+```
+
+3. Run the bot:
+
+```bash
+python main.py --bot
+# or
+./start-bot.sh
+./start-bot.sh --log-level DEBUG
+```
+
+4. Pull logs over SSH when something goes wrong:
+
+```bash
+scp pi@raspberrypi:~/DiscordBot/logs/bot.log .
+# or
+rsync -avz pi@raspberrypi:~/DiscordBot/logs/ ./logs-from-pi/
+```
+
+### systemd (optional)
+
+Edit `deploy/discord-bot.service` so `User`, `WorkingDirectory`, and `ExecStart`
+match your install path and venv, then:
+
+```bash
+sudo cp deploy/discord-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now discord-bot
+journalctl -u discord-bot -f   # stderr stream; files still under logs/
+```
+
+The Tk control panel (`python main.py` / `--live`) remains available on Windows
+and other desktops; it is not required on the Pi.
 
 ## Sheet schema
 
