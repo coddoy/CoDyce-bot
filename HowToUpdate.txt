@@ -1,0 +1,25 @@
+How to update the Discord bot on the Raspberry Pi
+=================================================
+
+SSH into the Pi, then run:
+
+  cd ~/CoDyce-bot
+  git pull
+  sudo systemctl restart discord-bot
+
+If dependencies changed (requirements.txt was updated), also run:
+
+  cd ~/CoDyce-bot
+  source venv/bin/activate
+  pip install -r requirements.txt
+  sudo systemctl restart discord-bot
+
+Useful checks:
+
+  sudo systemctl status discord-bot
+  journalctl -u discord-bot -f
+
+(Press q to leave status/journal views.)
+
+Service unit uses:
+  ExecStart=/home/cody/CoDyce-bot/venv/bin/python main.py --bot --log-level INFO
