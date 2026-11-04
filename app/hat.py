@@ -328,7 +328,11 @@ def _strip_hat_prefix(text: str) -> str:
 
 
 def _matches_keyword(token: str, keyword: str) -> bool:
-    """Return whether ``token`` equals ``keyword``."""
+    """Return whether ``token`` equals ``keyword`` (case-insensitive).
+
+    Command keywords are always compared lowercased so users never need
+    exact capitalization.
+    """
     return token.lower() == keyword.lower()
 
 
@@ -352,7 +356,7 @@ def is_help_command(text: str | None) -> bool:
 
 
 def is_set_dice_command(text: str | None) -> bool:
-    """Return True when ``text`` is a ``/hat setDice`` invocation."""
+    """Return True when ``text`` is a ``/hat setdice`` invocation."""
     if not text:
         return False
     return _first_token(text) == SET_DICE_KEYWORD
@@ -371,18 +375,18 @@ def _validate_die_size(die: int) -> None:
 
 
 def parse_set_dice_command(text: str) -> int:
-    """Parse ``/hat setDice <size>`` and return the die size."""
+    """Parse ``/hat setdice <size>`` and return the die size."""
     cleaned = _strip_hat_prefix(text)
     if not cleaned:
-        raise HatCommandError("Usage: `/hat setDice <size>` (e.g. `/hat setDice 64`).")
+        raise HatCommandError("Usage: `/hat setdice <size>` (e.g. `/hat setdice 64`).")
 
     tokens = cleaned.split()
     if not _matches_keyword(tokens[0], SET_DICE_KEYWORD):
-        raise HatCommandError("Not a setDice command.")
+        raise HatCommandError("Not a setdice command.")
 
     if len(tokens) < 2:
         raise HatCommandError(
-            "Usage: `/hat setDice <size>` (e.g. `/hat setDice 64`)."
+            "Usage: `/hat setdice <size>` (e.g. `/hat setdice 64`)."
         )
 
     die = _try_int(tokens[1])
@@ -391,7 +395,7 @@ def parse_set_dice_command(text: str) -> int:
 
     if len(tokens) > 2:
         raise HatCommandError(
-            "Usage: `/hat setDice <size>` — no extra arguments."
+            "Usage: `/hat setdice <size>` — no extra arguments."
         )
 
     _validate_die_size(die)
@@ -487,7 +491,7 @@ def format_hat_help(
     if enable_hat:
         lines.append("__Preferences__ (hat shorthand only):")
         lines.append(
-            "\u2022 `/hat setDice 64` \u2014 set your default die "
+            "\u2022 `/hat setdice 64` \u2014 set your default die "
             "for `/hat 52` and `/hat 3 33`"
         )
         lines.append(

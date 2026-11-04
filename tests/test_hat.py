@@ -8,9 +8,14 @@ from app.hat import (
     HatCommandError,
     format_hat_help,
     format_hat_message,
+    is_help_command,
+    is_set_dice_command,
+    is_status_command,
     parse_hat_command,
     parse_hit_command,
+    parse_set_dice_command,
     roll_hat,
+    status_wants_all,
 )
 
 
@@ -195,6 +200,23 @@ class HitAndHelpTests(unittest.TestCase):
         text = format_hat_help(HAT_DIE, enable_hat=True, enable_generic=True)
         self.assertIn("10+5", text)
         self.assertIn("3d6+(4-1)", text)
+        self.assertIn("setdice", text)
+        self.assertNotIn("setDice", text)
+
+    def test_hit_keywords_case_insensitive(self) -> None:
+        for text in ("HIT", "Hit", "3 HIT", "3Hit", "HIT3"):
+            req = _parse(text)
+            self.assertTrue(req.is_hit, msg=text)
+
+    def test_setdice_case_insensitive(self) -> None:
+        for text in ("setdice 64", "setDice 64", "SETDICE 64", "SetDice 64"):
+            self.assertTrue(is_set_dice_command(text), msg=text)
+            self.assertEqual(parse_set_dice_command(text), 64, msg=text)
+
+    def test_help_and_status_case_insensitive(self) -> None:
+        self.assertTrue(is_help_command("HELP"))
+        self.assertTrue(is_status_command("STATUS"))
+        self.assertTrue(status_wants_all("Status --ALL"))
 
 
 class FormatAndRollTests(unittest.TestCase):
