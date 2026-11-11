@@ -22,6 +22,9 @@ Two independent parsers feed the same command, gated by config flags
 
   Modifiers may be integer expressions using ``+``, ``-``, and
   parentheses (spaces allowed), e.g. ``10+5``, ``(2+3)``, ``3 10 + 5``.
+  Several terms stay written out in the reply (``123+3`` shows as
+  ``+123+3``, and the roll line lists ``+ 123 + 3``) while the total
+  still uses their sum.
 
 * **Generic** (``enable_generic_rolls``) — the universal
   ``Z XdY[+/-#]`` form::
@@ -35,7 +38,8 @@ Two independent parsers feed the same command, gated by config flags
   Z defaults to 1, X defaults to 1. Limits: ``Z <= 20``,
   ``X <= 1000000``, ``Y <= 1000000``, ``|modifier| <= 1000000``.
   Modifiers may be tight or spaced expressions with ``+`` / ``-`` and
-  parentheses (``3d6+2``, ``3d6 + 2 + 3``, ``3d6+(1-2)``).
+  parentheses (``3d6+2``, ``3d6 + 2 + 3``, ``3d6+(1-2)``). Multi-term
+  modifiers are written out the same way as hat shorthand.
 
 Output form depends on group count:
 
@@ -80,6 +84,10 @@ class RollGroup:
     count: int      # X — number of dice rolled in this group
     die: int        # Y — sides per die
     modifier: int   # added to the group's sum
+    # Each signed addend when the modifier was entered as an expression.
+    # Empty for rolls with no modifier. A single term displays like
+    # ``modifier``; two or more are written out in the reply.
+    modifier_terms: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.count < 1:
@@ -97,6 +105,10 @@ class RollGroup:
         if abs(self.modifier) > MAX_MODIFIER:
             raise HatCommandError(
                 f"Modifier must be between -{MAX_MODIFIER} and +{MAX_MODIFIER}."
+            )
+        if self.modifier_terms and sum(self.modifier_terms) != self.modifier:
+            raise HatCommandError(
+                "Modifier terms do not match the total modifier."
             )
 
 
@@ -170,11 +182,15 @@ class _ModifierExprError(ValueError):
     """Internal: modifier expression could not be parsed."""
 
 
-def _parse_modifier_expression(text: str) -> tuple[int, str]:
+def _parse_modifier_expression(
+    text: str,
+) -> tuple[int, tuple[int, ...], str]:
     """Parse a leading ``+/-`` / parenthesis expression from ``text``.
 
-    Returns ``(value, remainder)``. ``remainder`` is the unconsumed
-    suffix (may have a leading space before reason text). Raises
+    Returns ``(value, terms, remainder)``. ``terms`` are the signed
+    addends that sum to ``value`` (parentheses are expanded, so
+    ``(4-1)`` is ``(4, -1)``). ``remainder`` is the unconsumed suffix
+    (may have a leading space before reason text). Raises
     :class:`_ModifierExprError` when no complete expression is present
     at the start of ``text``.
     """
@@ -182,7 +198,6 @@ def _parse_modifier_expression(text: str) -> tuple[int, str]:
         raise _ModifierExprError("empty")
 
     n = len(text)
-    pos = 0
 
     def _at(i: int) -> str:
         return text[i] if i < n else ""
@@ -192,52 +207,62 @@ def _parse_modifier_expression(text: str) -> tuple[int, str]:
             i += 1
         return i
 
-    def _parse_number(i: int) -> tuple[int, int]:
+    def _parse_number(i: int) -> tuple[int, tuple[int, ...], int]:
         if i >= n or not text[i].isdigit():
             raise _ModifierExprError("expected number")
         start = i
         i += 1
         while i < n and text[i].isdigit():
             i += 1
-        return int(text[start:i]), i
+        value = int(text[start:i])
+        return value, (value,), i
 
-    def _parse_primary(i: int, depth: int) -> tuple[int, int]:
+    def _parse_primary(
+        i: int, depth: int
+    ) -> tuple[int, tuple[int, ...], int]:
         i = _skip_ws(i)
         if _at(i) == "(":
             if depth >= MAX_EXPR_DEPTH:
                 raise _ModifierExprError("expression too deeply nested")
-            value, i = _parse_additive(i + 1, depth + 1)
+            value, terms, i = _parse_additive(i + 1, depth + 1)
             i = _skip_ws(i)
             if _at(i) != ")":
                 raise _ModifierExprError("missing closing parenthesis")
-            return value, i + 1
+            return value, terms, i + 1
         return _parse_number(i)
 
-    def _parse_unary(i: int, depth: int) -> tuple[int, int]:
+    def _parse_unary(
+        i: int, depth: int
+    ) -> tuple[int, tuple[int, ...], int]:
         i = _skip_ws(i)
         if _at(i) == "+":
             return _parse_unary(i + 1, depth)
         if _at(i) == "-":
-            value, i = _parse_unary(i + 1, depth)
-            return -value, i
+            value, terms, i = _parse_unary(i + 1, depth)
+            return -value, tuple(-term for term in terms), i
         return _parse_primary(i, depth)
 
-    def _parse_additive(i: int, depth: int) -> tuple[int, int]:
-        value, i = _parse_unary(i, depth)
+    def _parse_additive(
+        i: int, depth: int
+    ) -> tuple[int, tuple[int, ...], int]:
+        value, terms, i = _parse_unary(i, depth)
+        collected = list(terms)
         while True:
             saved = i
             j = _skip_ws(i)
             op = _at(j)
             if op == "+":
-                rhs, i = _parse_unary(j + 1, depth)
+                rhs, rhs_terms, i = _parse_unary(j + 1, depth)
                 value += rhs
+                collected.extend(rhs_terms)
             elif op == "-":
-                rhs, i = _parse_unary(j + 1, depth)
+                rhs, rhs_terms, i = _parse_unary(j + 1, depth)
                 value -= rhs
+                collected.extend(-term for term in rhs_terms)
             else:
                 i = saved
                 break
-        return value, i
+        return value, tuple(collected), i
 
     start = _skip_ws(0)
     if start >= n:
@@ -247,14 +272,14 @@ def _parse_modifier_expression(text: str) -> tuple[int, str]:
         raise _ModifierExprError("not an expression")
 
     try:
-        value, end = _parse_additive(start, 0)
+        value, terms, end = _parse_additive(start, 0)
     except _ModifierExprError:
         raise
 
     # A lone sign with no number is not a complete expression.
     if end == start:
         raise _ModifierExprError("empty")
-    return value, text[end:]
+    return value, terms, text[end:]
 
 
 def _looks_like_modifier_start(text: str) -> bool:
@@ -279,20 +304,22 @@ def _remainder_is_reason(remainder: str) -> bool:
     return remainder == "" or remainder[0].isspace()
 
 
-def _split_generic_modifier_and_reason(rest: str) -> tuple[int, str]:
+def _split_generic_modifier_and_reason(
+    rest: str,
+) -> tuple[int, tuple[int, ...], str]:
     """Parse optional modifier math and reason after an ``XdY`` match."""
     if not rest:
-        return 0, ""
+        return 0, (), ""
 
     i = 0
     while i < len(rest) and rest[i].isspace():
         i += 1
     if i >= len(rest):
-        return 0, ""
+        return 0, (), ""
 
     if rest[i] in "+-(":
         try:
-            value, remainder = _parse_modifier_expression(rest[i:])
+            value, terms, remainder = _parse_modifier_expression(rest[i:])
         except _ModifierExprError as exc:
             raise HatCommandError(
                 "Could not parse modifier expression after dice. "
@@ -304,14 +331,14 @@ def _split_generic_modifier_and_reason(rest: str) -> tuple[int, str]:
                 "Reason text must be separated from the dice/modifier "
                 "by a space."
             )
-        return value, remainder.strip()
+        return value, terms, remainder.strip()
 
     if i == 0:
         raise HatCommandError(
             "Could not parse roll. After `XdY` use a modifier "
             "(e.g. `+2`) or a space before reason text."
         )
-    return 0, rest.strip()
+    return 0, (), rest.strip()
 
 
 def _strip_hat_prefix(text: str) -> str:
@@ -460,7 +487,7 @@ def format_hat_help(
             f"\u2022 `/hat 3 33` \u2192 3 sets of 1d{hat_die}+33"
         )
         lines.append(
-            f"\u2022 `/hat 10+5` or `/hat 10 + 5` \u2192 1d{hat_die}+15"
+            f"\u2022 `/hat 10+5` or `/hat 10 + 5` \u2192 1d{hat_die}+10+5"
         )
         lines.append("\u2022 `/hat hit` or `/hit` \u2192 1d100")
         lines.append(
@@ -473,7 +500,8 @@ def format_hat_help(
         lines.append("__Generic dice__ (`Z XdY[+/- math]`):")
         lines.append("\u2022 `/hat d20` \u2192 1d20")
         lines.append("\u2022 `/hat 3d6+2` \u2192 3d6+2")
-        lines.append("\u2022 `/hat 3d6 + 1 + 2` or `3d6+(4-1)` \u2192 3d6+3")
+        lines.append("\u2022 `/hat 3d6 + 1 + 2` \u2192 3d6+1+2")
+        lines.append("\u2022 `/hat 3d6+(4-1)` \u2192 3d6+4-1")
         lines.append("\u2022 `/hat 2 4d8` \u2192 2 sets of 4d8")
         lines.append("\u2022 `/hat 3 d10+1` \u2192 3 sets of 1d10+1")
         lines.append(
@@ -593,9 +621,11 @@ def _build_generic_request(match: "re.Match[str]") -> HatRequest:
     z = int(z_raw) if z_raw else 1
     x = int(x_raw) if x_raw else 1
     y = int(y_raw)
-    modifier, reason = _split_generic_modifier_and_reason(rest)
+    modifier, terms, reason = _split_generic_modifier_and_reason(rest)
 
-    group = RollGroup(count=x, die=y, modifier=modifier)
+    group = RollGroup(
+        count=x, die=y, modifier=modifier, modifier_terms=terms
+    )
     return HatRequest(
         groups=_build_groups(group, z),
         is_hit=False,
@@ -655,7 +685,9 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     if count_match and _looks_like_modifier_start(count_match.group(3)):
         count = int(count_match.group(1))
         try:
-            modifier, remainder = _parse_modifier_expression(count_match.group(3))
+            modifier, terms, remainder = _parse_modifier_expression(
+                count_match.group(3)
+            )
         except _ModifierExprError as exc:
             raise HatCommandError(
                 "Could not parse modifier expression. "
@@ -667,7 +699,12 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
                 "Reason text must be separated from the modifier by a space."
             )
         reason = remainder.strip()
-        group = RollGroup(count=1, die=hat_die, modifier=modifier)
+        group = RollGroup(
+            count=1,
+            die=hat_die,
+            modifier=modifier,
+            modifier_terms=terms,
+        )
         return HatRequest(
             groups=_build_groups(group, count),
             is_hit=False,
@@ -676,7 +713,7 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
 
     # "<modifier-expr>" — single hat roll; trailing text is reason.
     try:
-        modifier, remainder = _parse_modifier_expression(cleaned)
+        modifier, terms, remainder = _parse_modifier_expression(cleaned)
     except _ModifierExprError as exc:
         raise HatCommandError(
             f"Could not understand `{first}`. "
@@ -690,7 +727,9 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
         )
 
     reason = remainder.strip()
-    group = RollGroup(count=1, die=hat_die, modifier=modifier)
+    group = RollGroup(
+        count=1, die=hat_die, modifier=modifier, modifier_terms=terms
+    )
     return HatRequest(groups=(group,), is_hit=False, reason=reason)
 
 
@@ -788,6 +827,42 @@ def _format_modifier(modifier: int) -> str:
     return ""
 
 
+def _format_modifier_suffix(group: RollGroup) -> str:
+    """Render the modifier attached to ``XdY`` in the request line.
+
+    One number stays ``+N`` / ``-N``. Two or more terms are written in
+    order (``+123+3``, ``+10-5``, ``-3+10``) so each part stays visible.
+    """
+    terms = group.modifier_terms
+    if len(terms) < 2:
+        return _format_modifier(group.modifier)
+    pieces: list[str] = []
+    for term in terms:
+        if term < 0:
+            pieces.append(str(term))
+        else:
+            pieces.append(f"+{term}")
+    return "".join(pieces)
+
+
+def _format_term_breakdown(group: RollGroup) -> str:
+    """Roll-line suffix listing each modifier term, or ``""`` for one term.
+
+    ``123+3`` becomes `` + 123 + 3`` so the equation reads
+    ``[roll] + 123 + 3 = total``.
+    """
+    terms = group.modifier_terms
+    if len(terms) < 2:
+        return ""
+    pieces: list[str] = []
+    for term in terms:
+        if term < 0:
+            pieces.append(f"- {abs(term)}")
+        else:
+            pieces.append(f"+ {term}")
+    return " " + " ".join(pieces)
+
+
 def _hit_body_part(d100: int) -> str:
     """Map a d100 hit roll (1–100) to the struck body part."""
     if d100 <= 10:
@@ -874,7 +949,7 @@ def _format_group_expr(group: RollGroup, *, leading_one: bool) -> str:
     leading 1 so it reads ``d{Y}`` (matches the original multi-roll
     hat header).
     """
-    mod = _format_modifier(group.modifier)
+    mod = _format_modifier_suffix(group)
     if group.count > 1:
         return f"{group.count}d{group.die}{mod}"
     if leading_one:
@@ -903,9 +978,10 @@ def format_hat_message(
         total_suffix = _format_total_suffix(
             total, hit_suffix=hit_suffix, show_nice=0 in nice
         )
+        breakdown = _format_term_breakdown(group)
         return (
             f"\U0001F3B2 {player} Request: {formula}{reason_str} "
-            f"Roll: [{rolls_str}] = {total_suffix}"
+            f"Roll: [{rolls_str}]{breakdown} = {total_suffix}"
         )
 
     # Multi-group form. All groups share their X/Y/modifier, so the
@@ -922,7 +998,10 @@ def format_hat_message(
             hit_suffix=hit_suffix,
             show_nice=(index - 1) in nice,
         )
-        lines.append(f"Set {index}: Roll: [{rolls_str}] = {total_suffix}")
+        breakdown = _format_term_breakdown(req.groups[index - 1])
+        lines.append(
+            f"Set {index}: Roll: [{rolls_str}]{breakdown} = {total_suffix}"
+        )
     return "\n".join(lines)
 
 

@@ -199,7 +199,9 @@ class HitAndHelpTests(unittest.TestCase):
     def test_help_mentions_modifier_math(self) -> None:
         text = format_hat_help(HAT_DIE, enable_hat=True, enable_generic=True)
         self.assertIn("10+5", text)
+        self.assertIn("1d32+10+5", text)
         self.assertIn("3d6+(4-1)", text)
+        self.assertIn("3d6+4-1", text)
         self.assertIn("setdice", text)
         self.assertNotIn("setDice", text)
 
@@ -220,11 +222,53 @@ class HitAndHelpTests(unittest.TestCase):
 
 
 class FormatAndRollTests(unittest.TestCase):
-    def test_format_uses_evaluated_modifier(self) -> None:
-        req = _parse("10+5")
+    def test_format_writes_out_each_added_term(self) -> None:
+        req = _parse("123+3")
         result = roll_hat(req, rng=__import__("random").Random(0))
         msg = format_hat_message("Ada", result)
-        self.assertIn("1d32+15", msg)
+        roll = result.group_rolls[0][0]
+        total = result.total_for(0)
+        self.assertEqual(req.groups[0].modifier, 126)
+        self.assertEqual(req.groups[0].modifier_terms, (123, 3))
+        self.assertIn("1d32+123+3", msg)
+        self.assertIn(f"Roll: [{roll}] + 123 + 3 = {total}", msg)
+        self.assertEqual(total, roll + 126)
+
+    def test_format_single_modifier_stays_compact(self) -> None:
+        req = _parse("52")
+        result = roll_hat(req, rng=__import__("random").Random(0))
+        msg = format_hat_message("Ada", result)
+        roll = result.group_rolls[0][0]
+        total = result.total_for(0)
+        self.assertIn("1d32+52", msg)
+        self.assertIn(f"Roll: [{roll}] = {total}", msg)
+
+    def test_format_writes_out_subtraction_and_parens(self) -> None:
+        req = _parse("(20+5)-3")
+        result = roll_hat(req, rng=__import__("random").Random(0))
+        msg = format_hat_message("Ada", result)
+        roll = result.group_rolls[0][0]
+        total = result.total_for(0)
+        self.assertEqual(req.groups[0].modifier_terms, (20, 5, -3))
+        self.assertIn("1d32+20+5-3", msg)
+        self.assertIn(f"Roll: [{roll}] + 20 + 5 - 3 = {total}", msg)
+
+    def test_format_generic_terms_and_multi_group(self) -> None:
+        generic = _parse("3d6+2+3")
+        generic_result = roll_hat(generic, rng=__import__("random").Random(1))
+        generic_msg = format_hat_message("Ada", generic_result)
+        rolls = ", ".join(str(r) for r in generic_result.group_rolls[0])
+        total = generic_result.total_for(0)
+        self.assertEqual(generic.groups[0].modifier_terms, (2, 3))
+        self.assertIn("3d6+2+3", generic_msg)
+        self.assertIn(f"Roll: [{rolls}] + 2 + 3 = {total}", generic_msg)
+        self.assertEqual(total, sum(generic_result.group_rolls[0]) + 5)
+
+        grouped = _parse("2 10+5 sword")
+        grouped_result = roll_hat(grouped, rng=__import__("random").Random(0))
+        grouped_msg = format_hat_message("Ada", grouped_result)
+        self.assertIn("Request: 2 d32+10+5 Reason: sword", grouped_msg)
+        self.assertEqual(grouped_msg.count("+ 10 + 5 ="), 2)
 
     def test_total_includes_modifier(self) -> None:
         req = _parse("3d6+2+3")
