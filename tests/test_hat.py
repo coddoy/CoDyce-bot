@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from decimal import Decimal
 
 from app.hat import (
     HatCommandError,
@@ -128,6 +129,57 @@ class HatShorthandTests(unittest.TestCase):
         with self.assertRaises(HatCommandError):
             _parse("10+5fire")
 
+    def test_integer_modifier_stays_int(self) -> None:
+        req = _parse("10+5")
+        self.assertIsInstance(req.groups[0].modifier, int)
+
+    def test_decimal_modifier(self) -> None:
+        req = _parse("2.5")
+        self.assertEqual(req.groups[0].modifier, Decimal("2.5"))
+        self.assertIsInstance(req.groups[0].modifier, Decimal)
+
+    def test_decimal_addition(self) -> None:
+        req = _parse("10.5+1.5")
+        self.assertEqual(req.groups[0].modifier, 12)
+        self.assertEqual(
+            req.groups[0].modifier_terms,
+            (Decimal("10.5"), Decimal("1.5")),
+        )
+
+    def test_leading_dot_decimal(self) -> None:
+        req = _parse(".5")
+        self.assertEqual(req.groups[0].modifier, Decimal("0.5"))
+
+    def test_trailing_dot_is_whole_number(self) -> None:
+        req = _parse("10.")
+        self.assertEqual(req.groups[0].modifier, 10)
+        self.assertIsInstance(req.groups[0].modifier, int)
+
+    def test_whole_decimal_coerces_to_int(self) -> None:
+        req = _parse("10.0+2.0")
+        self.assertEqual(req.groups[0].modifier, 12)
+        self.assertIsInstance(req.groups[0].modifier, int)
+
+    def test_count_with_decimal_modifier(self) -> None:
+        req = _parse("3 2.5")
+        self.assertEqual(req.num_groups, 3)
+        self.assertEqual(req.groups[0].modifier, Decimal("2.5"))
+
+    def test_count_with_leading_dot_modifier(self) -> None:
+        req = _parse("3 .5")
+        self.assertEqual(req.num_groups, 3)
+        self.assertEqual(req.groups[0].modifier, Decimal("0.5"))
+
+    def test_decimal_with_reason(self) -> None:
+        req = _parse("2.5 fire damage")
+        self.assertEqual(req.groups[0].modifier, Decimal("2.5"))
+        self.assertEqual(req.reason, "fire damage")
+
+    def test_decimal_die_count_rejected(self) -> None:
+        with self.assertRaises(HatCommandError) as caught:
+            _parse("2.5d6")
+        self.assertIn("whole numbers", str(caught.exception))
+
 
 class GenericModifierTests(unittest.TestCase):
     def test_simple_modifier(self) -> None:
@@ -178,6 +230,30 @@ class GenericModifierTests(unittest.TestCase):
         with self.assertRaises(HatCommandError):
             _parse("3d6+")
 
+    def test_decimal_modifier_on_generic(self) -> None:
+        req = _parse("3d6+2.5")
+        self.assertEqual(req.groups[0].count, 3)
+        self.assertEqual(req.groups[0].die, 6)
+        self.assertEqual(req.groups[0].modifier, Decimal("2.5"))
+
+    def test_spaced_decimal_modifier_on_generic(self) -> None:
+        req = _parse("2d8 + 1.25 + 0.25")
+        self.assertEqual(req.groups[0].modifier, Decimal("1.5"))
+        self.assertEqual(
+            req.groups[0].modifier_terms,
+            (Decimal("1.25"), Decimal("0.25")),
+        )
+
+    def test_decimal_die_size_rejected(self) -> None:
+        with self.assertRaises(HatCommandError) as caught:
+            _parse("3d6.5")
+        self.assertIn("whole numbers", str(caught.exception))
+
+    def test_spaced_dot_stays_reason(self) -> None:
+        req = _parse("d20 .hidden")
+        self.assertEqual(req.groups[0].modifier, 0)
+        self.assertEqual(req.reason, ".hidden")
+
 
 class HitAndHelpTests(unittest.TestCase):
     def test_hit_unchanged(self) -> None:
@@ -202,6 +278,8 @@ class HitAndHelpTests(unittest.TestCase):
         self.assertIn("1d32+10+5", text)
         self.assertIn("3d6+(4-1)", text)
         self.assertIn("3d6+4-1", text)
+        self.assertIn("2.5", text)
+        self.assertIn("3d6+2.5", text)
         self.assertIn("setdice", text)
         self.assertNotIn("setDice", text)
 
@@ -274,6 +352,28 @@ class FormatAndRollTests(unittest.TestCase):
         req = _parse("3d6+2+3")
         result = roll_hat(req, rng=__import__("random").Random(1))
         self.assertEqual(result.total_for(0), sum(result.group_rolls[0]) + 5)
+
+    def test_format_decimal_modifier(self) -> None:
+        req = _parse("10.5+1.5")
+        result = roll_hat(req, rng=__import__("random").Random(0))
+        msg = format_hat_message("Ada", result)
+        roll = result.group_rolls[0][0]
+        total = result.total_for(0)
+        self.assertIn("1d32+10.5+1.5", msg)
+        self.assertIn(f"Roll: [{roll}] + 10.5 + 1.5 = {total}", msg)
+        self.assertEqual(total, roll + 12)
+        self.assertIsInstance(total, int)
+
+    def test_format_fractional_total(self) -> None:
+        req = _parse("3d6+2.5")
+        result = roll_hat(req, rng=__import__("random").Random(1))
+        msg = format_hat_message("Ada", result)
+        rolls = ", ".join(str(r) for r in result.group_rolls[0])
+        total = result.total_for(0)
+        self.assertIn("3d6+2.5", msg)
+        self.assertIn(f"Roll: [{rolls}] = {total}", msg)
+        self.assertEqual(total, sum(result.group_rolls[0]) + Decimal("2.5"))
+        self.assertIn(str(total), msg)
 
 
 if __name__ == "__main__":

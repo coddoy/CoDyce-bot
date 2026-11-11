@@ -20,8 +20,9 @@ Two independent parsers feed the same command, gated by config flags
       hit <count>           # count d100   (X must be < 10)
       hit<count>            # count d100   (X must be < 10, sticky)
 
-  Modifiers may be integer expressions using ``+``, ``-``, and
-  parentheses (spaces allowed), e.g. ``10+5``, ``(2+3)``, ``3 10 + 5``.
+  Modifiers may be expressions using ``+``, ``-``, parentheses, and
+  decimals (spaces allowed), e.g. ``10+5``, ``(2+3)``, ``3 10 + 5``,
+  ``2.5``, ``10.5+1.5``. Dice counts and die sizes stay whole numbers.
   Several terms stay written out in the reply (``123+3`` shows as
   ``+123+3``, and the roll line lists ``+ 123 + 3``) while the total
   still uses their sum.
@@ -37,9 +38,10 @@ Two independent parsers feed the same command, gated by config flags
 
   Z defaults to 1, X defaults to 1. Limits: ``Z <= 20``,
   ``X <= 1000000``, ``Y <= 1000000``, ``|modifier| <= 1000000``.
-  Modifiers may be tight or spaced expressions with ``+`` / ``-`` and
-  parentheses (``3d6+2``, ``3d6 + 2 + 3``, ``3d6+(1-2)``). Multi-term
-  modifiers are written out the same way as hat shorthand.
+  Modifiers may be tight or spaced expressions with ``+`` / ``-``,
+  parentheses, and decimals (``3d6+2``, ``3d6 + 2 + 3``, ``3d6+(1-2)``,
+  ``3d6+2.5``). Multi-term modifiers are written out the same way as
+  hat shorthand. Decimals apply to the modifier only, not to X or Y.
 
 Output form depends on group count:
 
@@ -58,6 +60,7 @@ import random
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 
 HIT_KEYWORD = "hit"
 HIT_DIE = 100
@@ -77,17 +80,42 @@ class HatCommandError(ValueError):
     """Raised when the user's input cannot be parsed as a /hat command."""
 
 
+# Modifier values. Whole numbers stay ``int``; fractional modifiers stay
+# ``Decimal`` so ``0.1 + 0.2`` is ``0.3`` and display does not pick up
+# binary float noise. Dice counts and die sizes remain ``int``.
+Number = int | Decimal
+
+
+def _coerce_number(value: Decimal) -> Number:
+    """Return ``int`` for whole values and a normalized ``Decimal`` otherwise."""
+    if not value.is_finite():
+        raise _ModifierExprError("modifier out of range")
+    if value == value.to_integral_value():
+        return int(value)
+    return value.normalize()
+
+
+def _format_number(value: Number) -> str:
+    """Render a modifier or total without trailing zeros or exponent notation."""
+    if isinstance(value, int):
+        return str(value)
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 @dataclass(frozen=True)
 class RollGroup:
     """One ``XdY+/-#`` group within a roll request."""
 
     count: int      # X — number of dice rolled in this group
     die: int        # Y — sides per die
-    modifier: int   # added to the group's sum
+    modifier: Number  # added to the group's sum (int, or Decimal if fractional)
     # Each signed addend when the modifier was entered as an expression.
     # Empty for rolls with no modifier. A single term displays like
     # ``modifier``; two or more are written out in the reply.
-    modifier_terms: tuple[int, ...] = ()
+    modifier_terms: tuple[Number, ...] = ()
 
     def __post_init__(self) -> None:
         if self.count < 1:
@@ -148,10 +176,10 @@ class HatResult:
     request: HatRequest
     group_rolls: tuple[tuple[int, ...], ...] = field(default_factory=tuple)
 
-    def total_for(self, group_index: int) -> int:
+    def total_for(self, group_index: int) -> Number:
         rolls = self.group_rolls[group_index]
         modifier = self.request.groups[group_index].modifier
-        return sum(rolls) + modifier
+        return _coerce_number(Decimal(sum(rolls)) + Decimal(modifier))
 
 
 # ---------------------------------------------------------------------------
@@ -184,15 +212,16 @@ class _ModifierExprError(ValueError):
 
 def _parse_modifier_expression(
     text: str,
-) -> tuple[int, tuple[int, ...], str]:
+) -> tuple[Number, tuple[Number, ...], str]:
     """Parse a leading ``+/-`` / parenthesis expression from ``text``.
 
     Returns ``(value, terms, remainder)``. ``terms`` are the signed
     addends that sum to ``value`` (parentheses are expanded, so
-    ``(4-1)`` is ``(4, -1)``). ``remainder`` is the unconsumed suffix
-    (may have a leading space before reason text). Raises
-    :class:`_ModifierExprError` when no complete expression is present
-    at the start of ``text``.
+    ``(4-1)`` is ``(4, -1)``). Numbers may include a decimal point
+    (``2.5``, ``.5``); whole results stay ``int``. ``remainder`` is the
+    unconsumed suffix (may have a leading space before reason text).
+    Raises :class:`_ModifierExprError` when no complete expression is
+    present at the start of ``text``.
     """
     if text is None:
         raise _ModifierExprError("empty")
@@ -207,19 +236,35 @@ def _parse_modifier_expression(
             i += 1
         return i
 
-    def _parse_number(i: int) -> tuple[int, tuple[int, ...], int]:
-        if i >= n or not text[i].isdigit():
+    def _parse_number(i: int) -> tuple[Number, tuple[Number, ...], int]:
+        if i >= n or not (text[i].isdigit() or text[i] == "."):
             raise _ModifierExprError("expected number")
         start = i
-        i += 1
-        while i < n and text[i].isdigit():
-            i += 1
-        value = int(text[start:i])
+        saw_digit = False
+        saw_dot = False
+        while i < n:
+            ch = text[i]
+            if ch.isdigit():
+                saw_digit = True
+                i += 1
+                continue
+            if ch == "." and not saw_dot:
+                saw_dot = True
+                i += 1
+                continue
+            break
+        if not saw_digit:
+            raise _ModifierExprError("expected number")
+        raw = text[start:i]
+        if saw_dot:
+            value: Number = _coerce_number(Decimal(raw))
+        else:
+            value = int(raw)
         return value, (value,), i
 
     def _parse_primary(
         i: int, depth: int
-    ) -> tuple[int, tuple[int, ...], int]:
+    ) -> tuple[Number, tuple[Number, ...], int]:
         i = _skip_ws(i)
         if _at(i) == "(":
             if depth >= MAX_EXPR_DEPTH:
@@ -233,18 +278,19 @@ def _parse_modifier_expression(
 
     def _parse_unary(
         i: int, depth: int
-    ) -> tuple[int, tuple[int, ...], int]:
+    ) -> tuple[Number, tuple[Number, ...], int]:
         i = _skip_ws(i)
         if _at(i) == "+":
             return _parse_unary(i + 1, depth)
         if _at(i) == "-":
             value, terms, i = _parse_unary(i + 1, depth)
-            return -value, tuple(-term for term in terms), i
+            negated = tuple(_coerce_number(-Decimal(term)) for term in terms)
+            return _coerce_number(-Decimal(value)), negated, i
         return _parse_primary(i, depth)
 
     def _parse_additive(
         i: int, depth: int
-    ) -> tuple[int, tuple[int, ...], int]:
+    ) -> tuple[Number, tuple[Number, ...], int]:
         value, terms, i = _parse_unary(i, depth)
         collected = list(terms)
         while True:
@@ -253,12 +299,14 @@ def _parse_modifier_expression(
             op = _at(j)
             if op == "+":
                 rhs, rhs_terms, i = _parse_unary(j + 1, depth)
-                value += rhs
+                value = _coerce_number(Decimal(value) + Decimal(rhs))
                 collected.extend(rhs_terms)
             elif op == "-":
                 rhs, rhs_terms, i = _parse_unary(j + 1, depth)
-                value -= rhs
-                collected.extend(-term for term in rhs_terms)
+                value = _coerce_number(Decimal(value) - Decimal(rhs))
+                collected.extend(
+                    _coerce_number(-Decimal(term)) for term in rhs_terms
+                )
             else:
                 i = saved
                 break
@@ -268,7 +316,7 @@ def _parse_modifier_expression(
     if start >= n:
         raise _ModifierExprError("empty")
     first = text[start]
-    if not (first.isdigit() or first in "+-("):
+    if not (first.isdigit() or first in "+-(" or first == "."):
         raise _ModifierExprError("not an expression")
 
     try:
@@ -285,16 +333,17 @@ def _parse_modifier_expression(
 def _looks_like_modifier_start(text: str) -> bool:
     """True when ``text`` begins a count-form modifier (not ``3 + 5`` math).
 
-    Count form requires the modifier to start with a digit, ``(``, or a
-    sign stuck to a digit (``-5`` / ``+5``). Spaced operators after the
-    count (``3 + 5``) are treated as a single expression instead.
+    Count form requires the modifier to start with a digit, ``.``, ``(``,
+    or a sign stuck to a digit or decimal (``-5`` / ``+.5``). Spaced
+    operators after the count (``3 + 5``) are treated as a single
+    expression instead.
     """
     if not text:
         return False
     ch = text[0]
-    if ch.isdigit() or ch == "(":
+    if ch.isdigit() or ch in "(.":
         return True
-    if ch in "+-" and len(text) > 1 and text[1].isdigit():
+    if ch in "+-" and len(text) > 1 and (text[1].isdigit() or text[1] == "."):
         return True
     return False
 
@@ -304,9 +353,30 @@ def _remainder_is_reason(remainder: str) -> bool:
     return remainder == "" or remainder[0].isspace()
 
 
+def _decimal_stuck_to_die(consumed: str, remainder: str) -> bool:
+    """True when a decimal modifier is glued to a die, as in ``2.5d6``."""
+    return (
+        "." in consumed
+        and remainder[:1].lower() == "d"
+        and len(remainder) > 1
+        and remainder[1].isdigit()
+    )
+
+
+def _reject_decimal_die(source: str, remainder: str) -> None:
+    """Raise when ``source`` used a decimal as part of a die, not a modifier."""
+    consumed = source[: len(source) - len(remainder)] if remainder else source
+    if _decimal_stuck_to_die(consumed, remainder):
+        raise HatCommandError(
+            "Die count and die size must be whole numbers. "
+            "Decimals are only allowed in the modifier "
+            "(e.g. `3d6+2.5`)."
+        )
+
+
 def _split_generic_modifier_and_reason(
     rest: str,
-) -> tuple[int, tuple[int, ...], str]:
+) -> tuple[Number, tuple[Number, ...], str]:
     """Parse optional modifier math and reason after an ``XdY`` match."""
     if not rest:
         return 0, (), ""
@@ -317,15 +387,23 @@ def _split_generic_modifier_and_reason(
     if i >= len(rest):
         return 0, (), ""
 
+    if i == 0 and rest[0] == ".":
+        raise HatCommandError(
+            "Die count and die size must be whole numbers. "
+            "Decimals are only allowed in the modifier "
+            "(e.g. `3d6+2.5`)."
+        )
+
     if rest[i] in "+-(":
         try:
             value, terms, remainder = _parse_modifier_expression(rest[i:])
         except _ModifierExprError as exc:
             raise HatCommandError(
                 "Could not parse modifier expression after dice. "
-                "Use +/- math with optional parentheses "
-                "(e.g. `3d6+2`, `3d6 + 1 + 2`, `3d6+(4-1)`)."
+                "Use +/- math with decimals and optional parentheses "
+                "(e.g. `3d6+2`, `3d6+2.5`, `3d6 + 1 + 2`, `3d6+(4-1)`)."
             ) from exc
+        _reject_decimal_die(rest[i:], remainder)
         if not _remainder_is_reason(remainder):
             raise HatCommandError(
                 "Reason text must be separated from the dice/modifier "
@@ -489,6 +567,10 @@ def format_hat_help(
         lines.append(
             f"\u2022 `/hat 10+5` or `/hat 10 + 5` \u2192 1d{hat_die}+10+5"
         )
+        lines.append(
+            f"\u2022 `/hat 2.5` or `/hat 10.5+1.5` \u2192 "
+            f"1d{hat_die}+2.5 or 1d{hat_die}+10.5+1.5"
+        )
         lines.append("\u2022 `/hat hit` or `/hit` \u2192 1d100")
         lines.append(
             "\u2022 `/hat 3 hit` or `/hit 3` (also `3hit`, `hit3`) "
@@ -502,6 +584,7 @@ def format_hat_help(
         lines.append("\u2022 `/hat 3d6+2` \u2192 3d6+2")
         lines.append("\u2022 `/hat 3d6 + 1 + 2` \u2192 3d6+1+2")
         lines.append("\u2022 `/hat 3d6+(4-1)` \u2192 3d6+4-1")
+        lines.append("\u2022 `/hat 3d6+2.5` \u2192 3d6+2.5")
         lines.append("\u2022 `/hat 2 4d8` \u2192 2 sets of 4d8")
         lines.append("\u2022 `/hat 3 d10+1` \u2192 3 sets of 1d10+1")
         lines.append(
@@ -684,16 +767,18 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     count_match = _COUNT_THEN_REST_RE.match(cleaned)
     if count_match and _looks_like_modifier_start(count_match.group(3)):
         count = int(count_match.group(1))
+        modifier_src = count_match.group(3)
         try:
             modifier, terms, remainder = _parse_modifier_expression(
-                count_match.group(3)
+                modifier_src
             )
         except _ModifierExprError as exc:
             raise HatCommandError(
                 "Could not parse modifier expression. "
-                "Use +/- math with optional parentheses "
-                "(e.g. `10+5`, `(2+3)`, `3 10 + 5`)."
+                "Use +/- math with decimals and optional parentheses "
+                "(e.g. `10+5`, `2.5`, `(2+3)`, `3 10 + 5`)."
             ) from exc
+        _reject_decimal_die(modifier_src, remainder)
         if not _remainder_is_reason(remainder):
             raise HatCommandError(
                 "Reason text must be separated from the modifier by a space."
@@ -717,10 +802,11 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     except _ModifierExprError as exc:
         raise HatCommandError(
             f"Could not understand `{first}`. "
-            "Start with an integer or +/- math "
-            "(e.g., `52`, `10+5`, `3 33`, `hit`)."
+            "Start with a number or +/- math "
+            "(e.g., `52`, `2.5`, `10+5`, `3 33`, `hit`)."
         ) from exc
 
+    _reject_decimal_die(cleaned, remainder)
     if not _remainder_is_reason(remainder):
         raise HatCommandError(
             "Reason text must be separated from the modifier by a space."
@@ -819,11 +905,11 @@ def roll_hat(request: HatRequest, rng: random.Random | None = None) -> HatResult
 # ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
-def _format_modifier(modifier: int) -> str:
+def _format_modifier(modifier: Number) -> str:
     if modifier > 0:
-        return f"+{modifier}"
+        return f"+{_format_number(modifier)}"
     if modifier < 0:
-        return str(modifier)
+        return _format_number(modifier)
     return ""
 
 
@@ -839,9 +925,9 @@ def _format_modifier_suffix(group: RollGroup) -> str:
     pieces: list[str] = []
     for term in terms:
         if term < 0:
-            pieces.append(str(term))
+            pieces.append(_format_number(term))
         else:
-            pieces.append(f"+{term}")
+            pieces.append(f"+{_format_number(term)}")
     return "".join(pieces)
 
 
@@ -857,9 +943,9 @@ def _format_term_breakdown(group: RollGroup) -> str:
     pieces: list[str] = []
     for term in terms:
         if term < 0:
-            pieces.append(f"- {abs(term)}")
+            pieces.append(f"- {_format_number(abs(term))}")
         else:
-            pieces.append(f"+ {term}")
+            pieces.append(f"+ {_format_number(term)}")
     return " " + " ".join(pieces)
 
 
@@ -887,14 +973,14 @@ def _format_hit_location_suffix(rolls: tuple[int, ...]) -> str:
 
 
 def _format_total_suffix(
-    total: int,
+    total: Number,
     *,
     hit_suffix: str,
     show_nice: bool,
 ) -> str:
     """Render ``= {total}`` trailing text (hit location, optional *Nice!*)."""
     nice_suffix = " _Nice!_" if show_nice else ""
-    return f"{total}{hit_suffix}{nice_suffix}"
+    return f"{_format_number(total)}{hit_suffix}{nice_suffix}"
 
 
 class NiceDailyTracker:
