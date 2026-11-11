@@ -20,12 +20,15 @@ Two independent parsers feed the same command, gated by config flags
       hit <count>           # count d100   (X must be < 10)
       hit<count>            # count d100   (X must be < 10, sticky)
 
-  Modifiers may be expressions using ``+``, ``-``, parentheses, and
-  decimals (spaces allowed), e.g. ``10+5``, ``(2+3)``, ``3 10 + 5``,
-  ``2.5``, ``10.5+1.5``. Dice counts and die sizes stay whole numbers.
-  Several terms stay written out in the reply (``123+3`` shows as
-  ``+123+3``, and the roll line lists ``+ 123 + 3``) while the total
-  still uses their sum.
+  Modifiers may be expressions using ``+``, ``-``, ``*``, ``/``,
+  parentheses, and decimals (spaces allowed), e.g. ``10+5``, ``(2+3)``,
+  ``3 10 + 5``, ``2.5``, ``(450+91+29+120)*2.5``. ``*`` and ``/`` bind
+  tighter than ``+`` and ``-``. Dice counts and die sizes stay whole
+  numbers. Several ``+`` / ``-`` terms stay written out in the reply
+  (``123+3`` shows as ``+123+3``, and the roll line lists ``+ 123 + 3``)
+  while the total still uses their sum. An expression that uses ``*``
+  or ``/`` is folded into that sum so the reply shows the result
+  (``10*2`` shows as ``+20``).
 
 * **Generic** (``enable_generic_rolls``) — the universal
   ``Z XdY[+/-#]`` form::
@@ -38,10 +41,12 @@ Two independent parsers feed the same command, gated by config flags
 
   Z defaults to 1, X defaults to 1. Limits: ``Z <= 20``,
   ``X <= 1000000``, ``Y <= 1000000``, ``|modifier| <= 1000000``.
-  Modifiers may be tight or spaced expressions with ``+`` / ``-``,
-  parentheses, and decimals (``3d6+2``, ``3d6 + 2 + 3``, ``3d6+(1-2)``,
-  ``3d6+2.5``). Multi-term modifiers are written out the same way as
-  hat shorthand. Decimals apply to the modifier only, not to X or Y.
+  Modifiers may be tight or spaced expressions with ``+`` / ``-`` /
+  ``*`` / ``/``, parentheses, and decimals (``3d6+2``, ``3d6 + 2 + 3``,
+  ``3d6+(1-2)``, ``3d6+2.5``, ``3d6+2*3``). Multi-term ``+`` / ``-``
+  modifiers are written out the same way as hat shorthand. ``*`` and
+  ``/`` fold into the summed bonus. Decimals, multiplication, and
+  division apply to the modifier only, not to X or Y.
 
 Output form depends on group count:
 
@@ -210,6 +215,15 @@ class _ModifierExprError(ValueError):
     """Internal: modifier expression could not be parsed."""
 
 
+def _modifier_command_error(
+    exc: _ModifierExprError, message: str
+) -> HatCommandError:
+    """Turn a parser failure into the error shown to the user."""
+    if str(exc) == "division by zero":
+        return HatCommandError("Cannot divide by zero in a modifier.")
+    return HatCommandError(message)
+
+
 def _parse_modifier_expression(
     text: str,
 ) -> tuple[Number, tuple[Number, ...], str]:
@@ -217,7 +231,9 @@ def _parse_modifier_expression(
 
     Returns ``(value, terms, remainder)``. ``terms`` are the signed
     addends that sum to ``value`` (parentheses are expanded, so
-    ``(4-1)`` is ``(4, -1)``). Numbers may include a decimal point
+    ``(4-1)`` is ``(4, -1)``). ``*`` and ``/`` bind tighter than ``+``
+    and ``-``; an expression that uses either one folds into a single
+    addend equal to ``value``. Numbers may include a decimal point
     (``2.5``, ``.5``); whole results stay ``int``. ``remainder`` is the
     unconsumed suffix (may have a leading space before reason text).
     Raises :class:`_ModifierExprError` when no complete expression is
@@ -288,28 +304,59 @@ def _parse_modifier_expression(
             return _coerce_number(-Decimal(value)), negated, i
         return _parse_primary(i, depth)
 
+    def _parse_multiplicative(
+        i: int, depth: int
+    ) -> tuple[Number, tuple[Number, ...], int, bool]:
+        value, terms, i = _parse_unary(i, depth)
+        folded = False
+        while True:
+            saved = i
+            j = _skip_ws(i)
+            op = _at(j)
+            if op not in ("*", "/"):
+                i = saved
+                break
+            rhs, _rhs_terms, i = _parse_unary(j + 1, depth)
+            if op == "*":
+                value = _coerce_number(Decimal(value) * Decimal(rhs))
+            else:
+                if rhs == 0:
+                    raise _ModifierExprError("division by zero")
+                value = _coerce_number(Decimal(value) / Decimal(rhs))
+            terms = (value,)
+            folded = True
+        return value, terms, i, folded
+
     def _parse_additive(
         i: int, depth: int
     ) -> tuple[Number, tuple[Number, ...], int]:
-        value, terms, i = _parse_unary(i, depth)
+        value, terms, i, folded = _parse_multiplicative(i, depth)
         collected = list(terms)
         while True:
             saved = i
             j = _skip_ws(i)
             op = _at(j)
             if op == "+":
-                rhs, rhs_terms, i = _parse_unary(j + 1, depth)
+                rhs, rhs_terms, i, rhs_folded = _parse_multiplicative(
+                    j + 1, depth
+                )
                 value = _coerce_number(Decimal(value) + Decimal(rhs))
                 collected.extend(rhs_terms)
+                folded = folded or rhs_folded
             elif op == "-":
-                rhs, rhs_terms, i = _parse_unary(j + 1, depth)
+                rhs, rhs_terms, i, rhs_folded = _parse_multiplicative(
+                    j + 1, depth
+                )
                 value = _coerce_number(Decimal(value) - Decimal(rhs))
                 collected.extend(
                     _coerce_number(-Decimal(term)) for term in rhs_terms
                 )
+                folded = folded or rhs_folded
             else:
                 i = saved
                 break
+        if folded:
+            return value, (value,), i
         return value, tuple(collected), i
 
     start = _skip_ws(0)
@@ -398,10 +445,11 @@ def _split_generic_modifier_and_reason(
         try:
             value, terms, remainder = _parse_modifier_expression(rest[i:])
         except _ModifierExprError as exc:
-            raise HatCommandError(
+            raise _modifier_command_error(
+                exc,
                 "Could not parse modifier expression after dice. "
-                "Use +/- math with decimals and optional parentheses "
-                "(e.g. `3d6+2`, `3d6+2.5`, `3d6 + 1 + 2`, `3d6+(4-1)`)."
+                "Use + - * / math with decimals and optional parentheses "
+                "(e.g. `3d6+2`, `3d6+2*3`, `3d6 + 1 + 2`, `3d6+(4-1)/2`).",
             ) from exc
         _reject_decimal_die(rest[i:], remainder)
         if not _remainder_is_reason(remainder):
@@ -571,6 +619,10 @@ def format_hat_help(
             f"\u2022 `/hat 2.5` or `/hat 10.5+1.5` \u2192 "
             f"1d{hat_die}+2.5 or 1d{hat_die}+10.5+1.5"
         )
+        lines.append(
+            f"\u2022 `/hat (10+5)*2` or `/hat 10/4` \u2192 "
+            f"1d{hat_die}+30 or 1d{hat_die}+2.5"
+        )
         lines.append("\u2022 `/hat hit` or `/hit` \u2192 1d100")
         lines.append(
             "\u2022 `/hat 3 hit` or `/hit 3` (also `3hit`, `hit3`) "
@@ -585,6 +637,7 @@ def format_hat_help(
         lines.append("\u2022 `/hat 3d6 + 1 + 2` \u2192 3d6+1+2")
         lines.append("\u2022 `/hat 3d6+(4-1)` \u2192 3d6+4-1")
         lines.append("\u2022 `/hat 3d6+2.5` \u2192 3d6+2.5")
+        lines.append("\u2022 `/hat 3d6+2*3` \u2192 3d6+6")
         lines.append("\u2022 `/hat 2 4d8` \u2192 2 sets of 4d8")
         lines.append("\u2022 `/hat 3 d10+1` \u2192 3 sets of 1d10+1")
         lines.append(
@@ -773,10 +826,11 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
                 modifier_src
             )
         except _ModifierExprError as exc:
-            raise HatCommandError(
+            raise _modifier_command_error(
+                exc,
                 "Could not parse modifier expression. "
-                "Use +/- math with decimals and optional parentheses "
-                "(e.g. `10+5`, `2.5`, `(2+3)`, `3 10 + 5`)."
+                "Use + - * / math with decimals and optional parentheses "
+                "(e.g. `10+5`, `2.5`, `(2+3)*4`, `3 10 + 5`).",
             ) from exc
         _reject_decimal_die(modifier_src, remainder)
         if not _remainder_is_reason(remainder):
@@ -800,10 +854,11 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
     try:
         modifier, terms, remainder = _parse_modifier_expression(cleaned)
     except _ModifierExprError as exc:
-        raise HatCommandError(
+        raise _modifier_command_error(
+            exc,
             f"Could not understand `{first}`. "
-            "Start with a number or +/- math "
-            "(e.g., `52`, `2.5`, `10+5`, `3 33`, `hit`)."
+            "Start with a number or + - * / math "
+            "(e.g., `52`, `2.5`, `10*2`, `10+5`, `3 33`, `hit`).",
         ) from exc
 
     _reject_decimal_die(cleaned, remainder)

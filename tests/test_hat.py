@@ -180,6 +180,68 @@ class HatShorthandTests(unittest.TestCase):
             _parse("2.5d6")
         self.assertIn("whole numbers", str(caught.exception))
 
+    def test_multiplication(self) -> None:
+        req = _parse("10*2")
+        self.assertEqual(req.groups[0].modifier, 20)
+        self.assertEqual(req.groups[0].modifier_terms, (20,))
+
+    def test_multiplication_folds_surrounding_addition(self) -> None:
+        req = _parse("2+3*4")
+        self.assertEqual(req.groups[0].modifier, 14)
+        self.assertEqual(req.groups[0].modifier_terms, (14,))
+
+    def test_parentheses_before_multiply(self) -> None:
+        req = _parse("(2+3)*4")
+        self.assertEqual(req.groups[0].modifier, 20)
+
+    def test_sum_times_decimal(self) -> None:
+        req = _parse("(450+91+29+120)*2.5")
+        self.assertEqual(req.groups[0].modifier, 1725)
+        self.assertIsInstance(req.groups[0].modifier, int)
+        self.assertEqual(req.groups[0].modifier_terms, (1725,))
+
+    def test_sum_times_decimal_with_reason(self) -> None:
+        req = _parse("(450+91+29+120)*2.5 fire")
+        self.assertEqual(req.groups[0].modifier, 1725)
+        self.assertEqual(req.reason, "fire")
+
+    def test_spaced_multiply_and_divide(self) -> None:
+        self.assertEqual(_parse("10 * 2.5").groups[0].modifier, 25)
+        self.assertEqual(_parse("10 / 2").groups[0].modifier, 5)
+        self.assertIsInstance(_parse("10 / 2").groups[0].modifier, int)
+
+    def test_division_fraction(self) -> None:
+        req = _parse("10/4")
+        self.assertEqual(req.groups[0].modifier, Decimal("2.5"))
+
+    def test_division_is_left_associative(self) -> None:
+        self.assertEqual(_parse("8/4/2").groups[0].modifier, 1)
+        self.assertEqual(_parse("8/4*2").groups[0].modifier, 4)
+
+    def test_negative_product(self) -> None:
+        self.assertEqual(_parse("-2*3").groups[0].modifier, -6)
+        self.assertEqual(_parse("10/-2").groups[0].modifier, -5)
+
+    def test_count_with_product(self) -> None:
+        req = _parse("3 10*2")
+        self.assertEqual(req.num_groups, 3)
+        self.assertEqual(req.groups[0].modifier, 20)
+
+    def test_spaced_star_is_single_expression_not_count(self) -> None:
+        req = _parse("3 * 2")
+        self.assertEqual(req.num_groups, 1)
+        self.assertEqual(req.groups[0].modifier, 6)
+
+    def test_division_by_zero_rejected(self) -> None:
+        with self.assertRaises(HatCommandError) as caught:
+            _parse("10/0")
+        self.assertIn("divide by zero", str(caught.exception).lower())
+
+    def test_division_by_zero_in_parentheses(self) -> None:
+        with self.assertRaises(HatCommandError) as caught:
+            _parse("5/(1-1)")
+        self.assertIn("divide by zero", str(caught.exception).lower())
+
 
 class GenericModifierTests(unittest.TestCase):
     def test_simple_modifier(self) -> None:
@@ -254,6 +316,24 @@ class GenericModifierTests(unittest.TestCase):
         self.assertEqual(req.groups[0].modifier, 0)
         self.assertEqual(req.reason, ".hidden")
 
+    def test_generic_product_in_modifier(self) -> None:
+        req = _parse("3d6+2*3")
+        self.assertEqual(req.groups[0].modifier, 6)
+        self.assertEqual(req.groups[0].modifier_terms, (6,))
+
+    def test_generic_quotient_in_parentheses(self) -> None:
+        req = _parse("3d6+(4-1)/2")
+        self.assertEqual(req.groups[0].modifier, Decimal("1.5"))
+
+    def test_generic_star_does_not_scale_dice(self) -> None:
+        with self.assertRaises(HatCommandError):
+            _parse("3d6*2")
+
+    def test_generic_division_by_zero(self) -> None:
+        with self.assertRaises(HatCommandError) as caught:
+            _parse("3d6+1/0")
+        self.assertIn("divide by zero", str(caught.exception).lower())
+
 
 class HitAndHelpTests(unittest.TestCase):
     def test_hit_unchanged(self) -> None:
@@ -280,6 +360,8 @@ class HitAndHelpTests(unittest.TestCase):
         self.assertIn("3d6+4-1", text)
         self.assertIn("2.5", text)
         self.assertIn("3d6+2.5", text)
+        self.assertIn("(10+5)*2", text)
+        self.assertIn("3d6+2*3", text)
         self.assertIn("setdice", text)
         self.assertNotIn("setDice", text)
 
@@ -374,6 +456,17 @@ class FormatAndRollTests(unittest.TestCase):
         self.assertIn(f"Roll: [{rolls}] = {total}", msg)
         self.assertEqual(total, sum(result.group_rolls[0]) + Decimal("2.5"))
         self.assertIn(str(total), msg)
+
+    def test_format_folded_product(self) -> None:
+        req = _parse("(450+91+29+120)*2.5")
+        result = roll_hat(req, rng=__import__("random").Random(0))
+        msg = format_hat_message("Ada", result)
+        roll = result.group_rolls[0][0]
+        total = result.total_for(0)
+        self.assertIn("1d32+1725", msg)
+        self.assertNotIn("*2.5", msg)
+        self.assertIn(f"Roll: [{roll}] = {total}", msg)
+        self.assertEqual(total, roll + 1725)
 
 
 if __name__ == "__main__":
