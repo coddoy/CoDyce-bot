@@ -27,8 +27,8 @@ Two independent parsers feed the same command, gated by config flags
   numbers. Several ``+`` / ``-`` terms stay written out in the reply
   (``123+3`` shows as ``+123+3``, and the roll line lists ``+ 123 + 3``)
   while the total still uses their sum. An expression that uses ``*``
-  or ``/`` is folded into that sum so the reply shows the result
-  (``10*2`` shows as ``+20``).
+  or ``/`` keeps that text on the request (``1d8+123+10*1.8``) and
+  shows the computed modifier on the roll line (``[7] + 141 = 148``).
 
 * **Generic** (``enable_generic_rolls``) — the universal
   ``Z XdY[+/-#]`` form::
@@ -45,8 +45,10 @@ Two independent parsers feed the same command, gated by config flags
   ``*`` / ``/``, parentheses, and decimals (``3d6+2``, ``3d6 + 2 + 3``,
   ``3d6+(1-2)``, ``3d6+2.5``, ``3d6+2*3``). Multi-term ``+`` / ``-``
   modifiers are written out the same way as hat shorthand. ``*`` and
-  ``/`` fold into the summed bonus. Decimals, multiplication, and
-  division apply to the modifier only, not to X or Y.
+  ``/`` stay on the request as typed (``3d6+2*3``) and the roll line
+  shows the computed modifier.
+  Decimals, multiplication, and division apply to the modifier only,
+  not to X or Y.
 
 Output form depends on group count:
 
@@ -121,6 +123,10 @@ class RollGroup:
     # Empty for rolls with no modifier. A single term displays like
     # ``modifier``; two or more are written out in the reply.
     modifier_terms: tuple[Number, ...] = ()
+    # Typed modifier text when it uses ``*`` or ``/`` (``123+10*1.8``).
+    # Empty for plain numbers and ``+`` / ``-`` expressions, which are
+    # rendered from ``modifier_terms`` instead.
+    modifier_expr: str = ""
 
     def __post_init__(self) -> None:
         if self.count < 1:
@@ -233,7 +239,8 @@ def _parse_modifier_expression(
     addends that sum to ``value`` (parentheses are expanded, so
     ``(4-1)`` is ``(4, -1)``). ``*`` and ``/`` bind tighter than ``+``
     and ``-``; an expression that uses either one folds into a single
-    addend equal to ``value``. Numbers may include a decimal point
+    addend equal to ``value``. The reply still shows the typed text.
+    Numbers may include a decimal point
     (``2.5``, ``.5``); whole results stay ``int``. ``remainder`` is the
     unconsumed suffix (may have a leading space before reason text).
     Raises :class:`_ModifierExprError` when no complete expression is
@@ -400,6 +407,23 @@ def _remainder_is_reason(remainder: str) -> bool:
     return remainder == "" or remainder[0].isspace()
 
 
+def _typed_modifier_expr(source: str, remainder: str) -> str:
+    """Keep the typed modifier when it uses ``*`` or ``/``.
+
+    ``+`` / ``-`` expressions stay empty so the reply can expand each
+    addend. Multiplication and division stay as entered
+    (``123+10*1.8``) instead of being replaced by their total.
+    """
+    if remainder:
+        consumed = source[: len(source) - len(remainder)]
+    else:
+        consumed = source
+    consumed = consumed.strip()
+    if "*" in consumed or "/" in consumed:
+        return consumed
+    return ""
+
+
 def _decimal_stuck_to_die(consumed: str, remainder: str) -> bool:
     """True when a decimal modifier is glued to a die, as in ``2.5d6``."""
     return (
@@ -423,16 +447,20 @@ def _reject_decimal_die(source: str, remainder: str) -> None:
 
 def _split_generic_modifier_and_reason(
     rest: str,
-) -> tuple[Number, tuple[Number, ...], str]:
-    """Parse optional modifier math and reason after an ``XdY`` match."""
+) -> tuple[Number, tuple[Number, ...], str, str]:
+    """Parse optional modifier math and reason after an ``XdY`` match.
+
+    Returns ``(value, terms, reason, expr)``. ``expr`` is the typed
+    modifier when it uses ``*`` or ``/``, otherwise ``""``.
+    """
     if not rest:
-        return 0, (), ""
+        return 0, (), "", ""
 
     i = 0
     while i < len(rest) and rest[i].isspace():
         i += 1
     if i >= len(rest):
-        return 0, (), ""
+        return 0, (), "", ""
 
     if i == 0 and rest[0] == ".":
         raise HatCommandError(
@@ -457,14 +485,15 @@ def _split_generic_modifier_and_reason(
                 "Reason text must be separated from the dice/modifier "
                 "by a space."
             )
-        return value, terms, remainder.strip()
+        expr = _typed_modifier_expr(rest[i:], remainder)
+        return value, terms, remainder.strip(), expr
 
     if i == 0:
         raise HatCommandError(
             "Could not parse roll. After `XdY` use a modifier "
             "(e.g. `+2`) or a space before reason text."
         )
-    return 0, (), rest.strip()
+    return 0, (), rest.strip(), ""
 
 
 def _strip_hat_prefix(text: str) -> str:
@@ -620,8 +649,8 @@ def format_hat_help(
             f"1d{hat_die}+2.5 or 1d{hat_die}+10.5+1.5"
         )
         lines.append(
-            f"\u2022 `/hat (10+5)*2` or `/hat 10/4` \u2192 "
-            f"1d{hat_die}+30 or 1d{hat_die}+2.5"
+            f"\u2022 `/hat (10+5)*2` or `/hat 123+10*1.8` \u2192 "
+            f"1d{hat_die}+(10+5)*2 or 1d{hat_die}+123+10*1.8"
         )
         lines.append("\u2022 `/hat hit` or `/hit` \u2192 1d100")
         lines.append(
@@ -637,7 +666,7 @@ def format_hat_help(
         lines.append("\u2022 `/hat 3d6 + 1 + 2` \u2192 3d6+1+2")
         lines.append("\u2022 `/hat 3d6+(4-1)` \u2192 3d6+4-1")
         lines.append("\u2022 `/hat 3d6+2.5` \u2192 3d6+2.5")
-        lines.append("\u2022 `/hat 3d6+2*3` \u2192 3d6+6")
+        lines.append("\u2022 `/hat 3d6+2*3` \u2192 3d6+2*3")
         lines.append("\u2022 `/hat 2 4d8` \u2192 2 sets of 4d8")
         lines.append("\u2022 `/hat 3 d10+1` \u2192 3 sets of 1d10+1")
         lines.append(
@@ -757,10 +786,14 @@ def _build_generic_request(match: "re.Match[str]") -> HatRequest:
     z = int(z_raw) if z_raw else 1
     x = int(x_raw) if x_raw else 1
     y = int(y_raw)
-    modifier, terms, reason = _split_generic_modifier_and_reason(rest)
+    modifier, terms, reason, expr = _split_generic_modifier_and_reason(rest)
 
     group = RollGroup(
-        count=x, die=y, modifier=modifier, modifier_terms=terms
+        count=x,
+        die=y,
+        modifier=modifier,
+        modifier_terms=terms,
+        modifier_expr=expr,
     )
     return HatRequest(
         groups=_build_groups(group, z),
@@ -843,6 +876,7 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
             die=hat_die,
             modifier=modifier,
             modifier_terms=terms,
+            modifier_expr=_typed_modifier_expr(modifier_src, remainder),
         )
         return HatRequest(
             groups=_build_groups(group, count),
@@ -869,7 +903,11 @@ def _parse_hat_form(cleaned: str, hat_die: int) -> HatRequest:
 
     reason = remainder.strip()
     group = RollGroup(
-        count=1, die=hat_die, modifier=modifier, modifier_terms=terms
+        count=1,
+        die=hat_die,
+        modifier=modifier,
+        modifier_terms=terms,
+        modifier_expr=_typed_modifier_expr(cleaned, remainder),
     )
     return HatRequest(groups=(group,), is_hit=False, reason=reason)
 
@@ -968,12 +1006,34 @@ def _format_modifier(modifier: Number) -> str:
     return ""
 
 
+def _format_kept_expr(expr: str) -> str:
+    """Attach a typed ``*`` / ``/`` expression to ``XdY``."""
+    if expr[0] in "+-":
+        return expr
+    return f"+{expr}"
+
+
+def _format_computed_modifier_breakdown(modifier: Number) -> str:
+    """Roll-line form of a ``*`` / ``/`` modifier after it is evaluated.
+
+    ``123+10*1.8`` (value 141) becomes `` + 141`` so the equation reads
+    ``[roll] + 141 = total``.
+    """
+    if modifier < 0:
+        return f" - {_format_number(abs(modifier))}"
+    return f" + {_format_number(modifier)}"
+
+
 def _format_modifier_suffix(group: RollGroup) -> str:
     """Render the modifier attached to ``XdY`` in the request line.
 
-    One number stays ``+N`` / ``-N``. Two or more terms are written in
-    order (``+123+3``, ``+10-5``, ``-3+10``) so each part stays visible.
+    One number stays ``+N`` / ``-N``. Two or more ``+`` / ``-`` terms
+    are written in order (``+123+3``, ``+10-5``, ``-3+10``). An
+    expression that uses ``*`` or ``/`` is kept as typed
+    (``+123+10*1.8``).
     """
+    if group.modifier_expr:
+        return _format_kept_expr(group.modifier_expr)
     terms = group.modifier_terms
     if len(terms) < 2:
         return _format_modifier(group.modifier)
@@ -990,8 +1050,10 @@ def _format_term_breakdown(group: RollGroup) -> str:
     """Roll-line suffix listing each modifier term, or ``""`` for one term.
 
     ``123+3`` becomes `` + 123 + 3`` so the equation reads
-    ``[roll] + 123 + 3 = total``.
+    ``[roll] + 123 + 3 = total``. ``123+10*1.8`` becomes `` + 141``.
     """
+    if group.modifier_expr:
+        return _format_computed_modifier_breakdown(group.modifier)
     terms = group.modifier_terms
     if len(terms) < 2:
         return ""

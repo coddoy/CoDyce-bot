@@ -457,16 +457,54 @@ class FormatAndRollTests(unittest.TestCase):
         self.assertEqual(total, sum(result.group_rolls[0]) + Decimal("2.5"))
         self.assertIn(str(total), msg)
 
-    def test_format_folded_product(self) -> None:
+    def test_format_keeps_product_expression(self) -> None:
         req = _parse("(450+91+29+120)*2.5")
         result = roll_hat(req, rng=__import__("random").Random(0))
         msg = format_hat_message("Ada", result)
         roll = result.group_rolls[0][0]
         total = result.total_for(0)
-        self.assertIn("1d32+1725", msg)
-        self.assertNotIn("*2.5", msg)
-        self.assertIn(f"Roll: [{roll}] = {total}", msg)
+        self.assertEqual(req.groups[0].modifier, 1725)
+        self.assertEqual(req.groups[0].modifier_expr, "(450+91+29+120)*2.5")
+        self.assertIn("1d32+(450+91+29+120)*2.5", msg)
+        self.assertNotIn("1d32+1725", msg)
+        self.assertIn(f"Roll: [{roll}] + 1725 = {total}", msg)
         self.assertEqual(total, roll + 1725)
+
+    def test_format_keeps_mixed_multiply(self) -> None:
+        req = _parse("123+10*1.8")
+        result = roll_hat(req, rng=__import__("random").Random(0))
+        msg = format_hat_message("Ada", result)
+        roll = result.group_rolls[0][0]
+        total = result.total_for(0)
+        self.assertEqual(req.groups[0].modifier, 141)
+        self.assertIn("1d32+123+10*1.8", msg)
+        self.assertNotIn("1d32+141", msg)
+        self.assertIn(f"Roll: [{roll}] + 141 = {total}", msg)
+        self.assertEqual(total, roll + 141)
+
+    def test_format_keeps_generic_product(self) -> None:
+        req = _parse("3d6+2*3")
+        result = roll_hat(req, rng=__import__("random").Random(1))
+        msg = format_hat_message("Ada", result)
+        rolls = ", ".join(str(r) for r in result.group_rolls[0])
+        total = result.total_for(0)
+        self.assertIn("3d6+2*3", msg)
+        self.assertNotIn("3d6+6", msg)
+        self.assertIn(f"Roll: [{rolls}] + 6 = {total}", msg)
+        self.assertEqual(total, sum(result.group_rolls[0]) + 6)
+
+    def test_format_keeps_division_and_negative_product(self) -> None:
+        divided = format_hat_message(
+            "Ada", roll_hat(_parse("10/4"), rng=__import__("random").Random(0))
+        )
+        self.assertIn("1d32+10/4", divided)
+        self.assertIn(" + 2.5 =", divided)
+
+        negative = format_hat_message(
+            "Ada", roll_hat(_parse("-2*3"), rng=__import__("random").Random(0))
+        )
+        self.assertIn("1d32-2*3", negative)
+        self.assertIn(" - 6 =", negative)
 
 
 if __name__ == "__main__":
